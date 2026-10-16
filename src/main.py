@@ -1,17 +1,20 @@
 """
 AirQuality Guardian - Main Entry Point
 """
+
+"""
+AirQuality Guardian - Main Entry Point
+"""
 import asyncio
 import os
 from dotenv import load_dotenv
 from loguru import logger
 
-from src.fetcher.fetcher import DataFetcher
-from src.validation.validator import DataValidator
+from fetcher.fetcher import DataFetcher
+from validation.validator import DataValidator
 
 load_dotenv()
 
-# Configure logging
 logger.add("logs/pipeline_{time}.log", rotation="1 day", level=os.getenv("LOG_LEVEL", "INFO"))
 
 
@@ -21,15 +24,15 @@ async def main():
     fetcher = DataFetcher()
     validator = DataValidator()
     
-    # Test fetch
-    data = await fetcher.fetch({"city": "Hanoi", "limit": 5})
+    # Fetch từ location 4946813 (Hà Nội)
+    data = await fetcher.fetch({"location_id": 4946813})
     
     if data:
         validated = validator.validate(data)
-        logger.info(f"Fetched {len(validated)} valid records")
+        logger.info(f"Fetched {len(validated)} valid measurements")
         
-        for v in validated:
-            print(f"  - {v.location_name}")
+        for m in validated:
+            print(f"  - {m.parameter}: {m.value} {m.unit}")
     else:
         logger.error("Failed to fetch data")
 

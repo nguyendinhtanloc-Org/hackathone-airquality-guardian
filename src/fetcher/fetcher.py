@@ -1,8 +1,10 @@
 """
 Data Fetcher - Lấy dữ liệu từ OpenAQ API
+Có cache sensor info để tăng tốc
 """
 
 import httpx
+import asyncio
 import os
 from loguru import logger
 
@@ -15,6 +17,8 @@ class DataFetcher:
         self.api_key = os.getenv("OPENAQ_API_KEY")
         self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.timeout = 10
+        # Cache để không fetch lại sensor info
+        self._sensor_cache: dict = {}
     
     def _get_headers(self) -> dict:
         headers = {"accept": "application/json"}
@@ -23,19 +27,21 @@ class DataFetcher:
         return headers
     
     async def _get_sensor_info(self, client: httpx.AsyncClient, sensor_id: int) -> dict:
-        """
-        Lấy thông tin sensor từ /v3/sensors/{id}
-        Response có dạng: {"meta": ..., "results": [{sensor_info}]}
-        """
+        """Lấy thông tin sensor (có cache)"""
+        # Check cache trước
+        if sensor_id in self._sensor_cache:
+            return self._sensor_cache[sensor_id]
+        
         url = f"{self.base_url}/sensors/{sensor_id}"
         try:
             response = await client.get(url, headers=self._get_headers())
             if response.status_code == 200:
                 data = response.json()
-                # Lấy sensor đầu tiên trong results
                 results = data.get("results", [])
                 if results:
-                    return results[0]  # Trả về sensor info
+                    sensor_info = results[0]
+                    self._sensor_cache[sensor_id] = sensor_info
+                    return sensor_info
         except Exception as e:
             logger.warning(f"Failed to get sensor {sensor_id}: {e}")
         return {}
@@ -51,7 +57,7 @@ class DataFetcher:
         
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # Bước 1: Lấy measurements
+                # Fetch measurements
                 response = await client.get(latest_url, headers=self._get_headers())
                 response.raise_for_status()
                 data = response.json()
@@ -59,12 +65,21 @@ class DataFetcher:
                 results = data.get("results", [])
                 logger.info(f"Got {len(results)} measurements")
                 
-                # Bước 2: Với mỗi measurement, fetch sensor info riêng
+                # Fetch sensor info (parallel + cache)
+                sensor_ids = [m.get("sensorsId") for m in results if m.get("sensorsId")]
+                # Chỉ fetch những sensor chưa có trong cache
+                uncached_ids = [sid for sid in sensor_ids if sid not in self._sensor_cache]
+                
+                if uncached_ids:
+                    logger.info(f"Fetching {len(uncached_ids)} new sensor info")
+                    tasks = [self._get_sensor_info(client, sid) for sid in uncached_ids]
+                    await asyncio.gather(*tasks)
+                
+                # Gắn sensor info vào measurements
                 for m in results:
                     sensor_id = m.get("sensorsId")
-                    if sensor_id:
-                        sensor_info = await self._get_sensor_info(client, sensor_id)
-                        # sensor_info là dict có "parameter" field
+                    if sensor_id in self._sensor_cache:
+                        sensor_info = self._sensor_cache[sensor_id]
                         param = sensor_info.get("parameter", {})
                         if isinstance(param, dict):
                             m["parameter_name"] = param.get("name", "unknown")
@@ -72,12 +87,8 @@ class DataFetcher:
                         else:
                             m["parameter_name"] = str(param) if param else "unknown"
                             m["unit"] = ""
-                        
-                        logger.info(
-                            f"  sensor {sensor_id} -> {m['parameter_name']} "
-                            f"= {m.get('value')} {m.get('unit', '')}"
-                        )
                 
+                logger.info(f"Cache size: {len(self._sensor_cache)} sensors")
                 return data
                 
         except httpx.TimeoutException:
@@ -86,3 +97,7 @@ class DataFetcher:
         except httpx.HTTPError as e:
             logger.error(f"HTTP error: {e}")
             return None
+    
+    def clear_cache(self):
+        """Xóa cache"""
+        self._sensor_cache.clear()

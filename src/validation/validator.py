@@ -2,7 +2,7 @@
 Data Validator - Kiểm tra dữ liệu
 """
 
-from models.sensor_data import Measurement
+from src.models.sensor_data import Measurement
 from loguru import logger
 
 

@@ -270,3 +270,7 @@ data/processed/
 # OS
 .DS_Store
 Thumbs.db
+
+
+# Tai lieu
+.docs

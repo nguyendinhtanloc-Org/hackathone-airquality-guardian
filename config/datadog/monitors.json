@@ -1,0 +1,41 @@
+[
+  {
+    "name": "AirQuality Guardian: pipeline degraded",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:pipeline.records.failed{*} > 0",
+    "message": "Pipeline failures were reported in the last 5 minutes. Check the AirQuality Guardian pipeline logs.",
+    "options": {
+      "thresholds": {
+        "critical": 0
+      },
+      "notify_no_data": false,
+      "include_tags": true
+    }
+  },
+  {
+    "name": "AirQuality Guardian: quarantine overflow",
+    "type": "query alert",
+    "query": "max(last_5m):max:selfhealing.quarantine.count{*} > 10",
+    "message": "The quarantine count exceeded 10. Investigate validation or upstream API errors.",
+    "options": {
+      "thresholds": {
+        "critical": 10
+      },
+      "notify_no_data": false,
+      "include_tags": true
+    }
+  },
+  {
+    "name": "AirQuality Guardian: unhealthy AQI",
+    "type": "query alert",
+    "query": "max(last_5m):max:datavalue.aqi.current{*} >= 151",
+    "message": "AQI reached an unhealthy level (151+). Review current pollutant readings.",
+    "options": {
+      "thresholds": {
+        "critical": 151
+      },
+      "notify_no_data": false,
+      "include_tags": true
+    }
+  }
+]

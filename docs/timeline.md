@@ -195,38 +195,42 @@ NGÀY 3 (Trước 17/10)
 
 NGÀY 4 (Trước 17/10)
 ═══════════════════════════════════════════════════
-□ Viết src/datadog/integrator.py:
+☑ Viết src/datadog/integrator.py:
    - Class DatadogIntegrator
    - Method send_metrics()
    - Method send_logs()
    - Method create_monitor()
 
-□ Tạo Datadog Dashboard template (JSON):
+☑ Tạo Datadog Dashboard template (JSON):
    - Pipeline health panel
    - Self-healing metrics panel
    - AQI overview panel
    - Logs panel
 
-□ Tạo Datadog Monitors template (JSON):
+☑ Tạo Datadog Monitors template (JSON):
    - Pipeline degraded monitor
    - Quarantine overflow monitor
    - AQI unhealthy monitor
 
-□ Commit
+☑ Unit tests cho Datadog API requests (mock)
+
+☑ Commit
 
 ───────────────────────────────────────────────────
 
 NGÀY 5 (Trước 17/10)
 ═══════════════════════════════════════════════════
-□ Viết tests/integration/test_pipeline.py:
+☑ Viết src/pipeline.py với run_once() fetch → validate → MongoDB
+
+☑ Viết tests/integration/test_pipeline.py:
    - Test fetcher → validator → MongoDB flow
    - Test self-healing flow
 
 □ Review code của Người 1
 
-□ Merge branches
+☑ Merge branches (data-pipeline đã được merge vào selfhealing)
 
-□ Integration test
+☑ Integration test (external services được mock)
 
 □ Push lên GitHub (branch: self-healing)
 ```

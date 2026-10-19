@@ -1,0 +1,81 @@
+{
+  "title": "AirQuality Guardian - Pipeline Health",
+  "description": "Pipeline, self-healing, AQI, and log overview.",
+  "layout_type": "ordered",
+  "widgets": [
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Pipeline health",
+        "requests": [
+          {
+            "q": "sum:pipeline.records.fetched{*}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:pipeline.records.valid{*}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:pipeline.records.failed{*}",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Self-healing metrics",
+        "requests": [
+          {
+            "q": "sum:selfhealing.retry.total{*}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:selfhealing.quarantine.count{*}",
+            "display_type": "line"
+          },
+          {
+            "q": "sum:selfhealing.replay.count{*}",
+            "display_type": "line"
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "query_value",
+        "title": "Current AQI",
+        "requests": [
+          {
+            "q": "max:datavalue.aqi.current{*}"
+          }
+        ],
+        "autoscale": true
+      }
+    },
+    {
+      "definition": {
+        "type": "list_stream",
+        "title": "Pipeline logs",
+        "requests": [
+          {
+            "response_format": "event_list",
+            "query": {
+              "data_source": "logs",
+              "query": "service:airquality-pipeline",
+              "indexes": [
+                "*"
+              ],
+              "compute": {
+                "aggregation": "count"
+              },
+              "group_by": []
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

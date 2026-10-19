@@ -56,6 +56,16 @@ python -m src.main
 docker-compose up
 ```
 
+### Chạy toàn bộ test theo thứ tự
+
+```bash
+python -m pytest -q
+```
+
+Pytest chạy test tuần tự theo mặc định; mỗi unit test vẫn độc lập và không dựa
+vào trạng thái do test trước tạo ra. Các flow nhiều thành phần nằm trong
+`tests/integration/`. Không dùng `-n` nếu muốn giữ chạy tuần tự.
+
 ## MongoDB
 
 Set `MONGODB_URI` and `MONGODB_DATABASE` in `.env`. The client loads these
@@ -79,6 +89,17 @@ The client uses the `air_quality`, `quarantine_events`, and `pipeline_status`
 collections. `aggregate_aqi()` summarizes each location's highest pollutant
 AQI per record; its optional filter accepts a MongoDB query such as a timestamp
 range.
+
+## Datadog
+
+Set `DATADOG_API_KEY`, `DATADOG_APP_KEY`, and optionally `DATADOG_SITE` in
+`.env`. Metrics and logs use the API key; creating monitors requires both keys.
+The dashboard and monitor request templates are in `config/datadog/`. They can
+be imported or submitted to the Datadog API after reviewing their queries and
+thresholds. Tests mock the API and never send data to a Datadog account.
+
+`Pipeline.run_once()` runs fetch → validate → MongoDB persistence. It expects a
+configured `DataFetcher`, `DataValidator`, and `MongoDBClient`.
 
 ## Cấu trúc project
 

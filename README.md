@@ -56,6 +56,30 @@ python -m src.main
 docker-compose up
 ```
 
+## MongoDB
+
+Set `MONGODB_URI` and `MONGODB_DATABASE` in `.env`. The client loads these
+settings when initialized, and creates indexes on `timestamp` and
+`metadata.location_id` for the `air_quality` collection.
+
+```python
+from src.database.mongodb import MongoDBClient
+
+database = MongoDBClient()
+try:
+    documents = database.query_air_quality(
+        {"metadata.location_id": 4946813},
+        limit=100,
+    )
+finally:
+    database.close()
+```
+
+The client uses the `air_quality`, `quarantine_events`, and `pipeline_status`
+collections. `aggregate_aqi()` summarizes each location's highest pollutant
+AQI per record; its optional filter accepts a MongoDB query such as a timestamp
+range.
+
 ## Cấu trúc project
 
 airquality-guardian/

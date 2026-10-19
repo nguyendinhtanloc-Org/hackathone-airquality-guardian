@@ -58,7 +58,11 @@ async def test_fetch_validate_and_persist_flow(monkeypatch):
 
     inserted_count = await pipeline.run_once({"location_id": 4946813})
 
-    assert inserted_count == 1
+    assert inserted_count.records_fetched == 1
+    assert inserted_count.records_valid == 1
+    assert inserted_count.records_inserted == 1
+    assert inserted_count.records_failed == 0
+    assert len(inserted_count.documents) == 1
     database.insert_air_quality.assert_called_once()
     document = database.insert_air_quality.call_args.args[0]
     assert document["metadata"] == {"location_id": 4946813}

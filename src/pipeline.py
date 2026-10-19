@@ -1,6 +1,8 @@
 """Orchestrate one fetch, validation, and MongoDB persistence cycle."""
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -8,6 +10,19 @@ from src.aqi.calculator import AQICalculator
 from src.database.mongodb import MongoDBClient
 from src.fetcher.fetcher import DataFetcher
 from src.validation.validator import DataValidator
+
+
+@dataclass(frozen=True)
+class PipelineRunResult:
+    """Summary and stored documents from one pipeline execution."""
+
+    location_id: int
+    records_fetched: int
+    records_valid: int
+    records_inserted: int
+    records_failed: int
+    duration_seconds: float
+    documents: tuple[dict[str, Any], ...]
 
 
 class Pipeline:
@@ -25,16 +40,21 @@ class Pipeline:
         self.database = database
         self.aqi_calculator = aqi_calculator or AQICalculator()
 
-    async def run_once(self, params: dict[str, Any] | None = None) -> int:
-        """Fetch, validate, and persist measurements; return the count saved."""
+    async def run_once(
+        self,
+        params: dict[str, Any] | None = None,
+    ) -> PipelineRunResult:
+        """Fetch, validate, persist, and summarize one execution."""
+        started_at = perf_counter()
         request_params = params or {}
         response = await self.fetcher.fetch(request_params)
         if response is None:
             raise RuntimeError("Air-quality fetch failed; no data was persisted.")
 
+        fetched_count = len(response.get("results", []))
         measurements = self.validator.validate(response)
         location_id = request_params.get("location_id", 4946813)
-        inserted_count = 0
+        inserted_documents: list[dict[str, Any]] = []
         for measurement in measurements:
             timestamp = self._parse_timestamp(measurement.last_updated)
             aqi_value = self.aqi_calculator.calculate(
@@ -50,20 +70,28 @@ class Pipeline:
                     **level,
                 }
 
-            self.database.insert_air_quality(
-                {
-                    "event_id": str(uuid4()),
-                    "metadata": {"location_id": location_id},
-                    "timestamp": timestamp,
-                    "measurements": {
-                        measurement.parameter: measurement.value,
-                        f"{measurement.parameter}_unit": measurement.unit,
-                    },
-                    "aqi": aqi_data,
-                }
-            )
-            inserted_count += 1
-        return inserted_count
+            document = {
+                "event_id": str(uuid4()),
+                "metadata": {"location_id": location_id},
+                "timestamp": timestamp,
+                "measurements": {
+                    measurement.parameter: measurement.value,
+                    f"{measurement.parameter}_unit": measurement.unit,
+                },
+                "aqi": aqi_data,
+            }
+            self.database.insert_air_quality(document)
+            inserted_documents.append(document)
+
+        return PipelineRunResult(
+            location_id=location_id,
+            records_fetched=fetched_count,
+            records_valid=len(measurements),
+            records_inserted=len(inserted_documents),
+            records_failed=max(fetched_count - len(measurements), 0),
+            duration_seconds=perf_counter() - started_at,
+            documents=tuple(inserted_documents),
+        )
 
     @staticmethod
     def _parse_timestamp(value: str | None) -> datetime:

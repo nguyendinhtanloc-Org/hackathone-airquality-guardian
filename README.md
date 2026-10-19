@@ -49,12 +49,35 @@ cp .env.example .env
 
 ### 5. Chạy
 ```bash
-# Local
+# Run once: fetch OpenAQ, save records to MongoDB Atlas, and send metrics/logs
+# to Datadog when DATADOG_API_KEY is configured.
 python -m src.main
 
 # Docker
 docker-compose up
 ```
+
+One live run writes the fetched measurements to the configured MongoDB
+`air_quality` collection. Use it once to verify the integration; don't run it
+repeatedly just to view the same data.
+
+#### Where to see the live result
+
+- **Terminal:** the run summary shows fetched/valid/inserted/failed counts. Each
+  inserted document is printed with its timestamp, measurement, and AQI.
+- **MongoDB Atlas:** open **Database → Browse Collections → airquality →
+  air_quality**. Filter by `{"metadata.location_id": 4946813}`, then sort by
+  `timestamp` descending. `MONGODB_URI` should include the database name, or set
+  `MONGODB_DATABASE` in `.env`.
+- **Datadog metrics:** open **Metrics → Explorer** and query
+  `pipeline.records.inserted` (or `pipeline.records.valid`); filter by
+  `service:airquality-pipeline` and `env:dev`.
+- **Datadog logs:** open **Logs → Explorer** and search
+  `service:airquality-pipeline "AirQuality pipeline run completed"`.
+
+Metrics can take a short time to appear in Datadog after ingestion. The
+application-key setting is not needed for sending pipeline metrics/logs; it is
+used for monitor management.
 
 ### Chạy toàn bộ test theo thứ tự
 

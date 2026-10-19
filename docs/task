@@ -1,0 +1,23 @@
+□ Đọc tài liệu MongoDB Time Series:
+   - https://www.mongodb.com/docs/manual/core/timeseries/
+   - Ví dụ về Time Series collections
+
+□ Đọc tài liệu Datadog:
+   - Dashboard docs
+   - Monitors docs
+   - Log management docs
+
+□ Setup MongoDB Atlas (free tier):
+   - Tạo account
+   - Tạo cluster (M0 Sandbox)
+   - Tạo database: airquality
+   - Tạo collections:
+     * air_quality (Time Series)
+     * quarantine_events
+     * pipeline_status
+
+□ Test kết nối từ local
+
+□ Commit
+
+───────────────────────────────────────────────────

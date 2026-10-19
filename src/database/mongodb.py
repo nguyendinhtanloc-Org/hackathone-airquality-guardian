@@ -35,9 +35,15 @@ class MongoDBClient:
             client = MongoClient(uri)
 
         database_name = database_name or os.getenv("MONGODB_DATABASE")
+        if database_name is None:
+            default_database = client.get_default_database(default=None)
+            if default_database is not None:
+                database_name = default_database.name
         if not database_name:
             client.close()
-            raise ValueError("MONGODB_DATABASE must be configured.")
+            raise ValueError(
+                "Set MONGODB_DATABASE or include a database name in MONGODB_URI."
+            )
 
         self.client = client
         self.database: Database[dict[str, Any]] = client[database_name]

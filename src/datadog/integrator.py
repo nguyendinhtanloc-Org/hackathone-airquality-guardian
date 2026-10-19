@@ -75,7 +75,12 @@ class DatadogIntegrator:
             {
                 "metric": name,
                 "type": 3,
-                "points": [[point_time.timestamp(), value]],
+                "points": [
+                    {
+                        "timestamp": int(point_time.timestamp()),
+                        "value": value,
+                    }
+                ],
                 "tags": list(tags or []),
             }
             for name, value in metrics.items()
@@ -110,7 +115,7 @@ class DatadogIntegrator:
             }
         )
         response = self.client.post(
-            "/api/v2/logs",
+            f"https://http-intake.logs.{self.site}/api/v2/logs",
             headers=self._headers(),
             json=[attributes],
         )

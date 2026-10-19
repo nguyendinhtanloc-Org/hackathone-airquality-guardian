@@ -31,6 +31,33 @@ def test_initialization_creates_required_indexes(mongo_client):
     )
 
 
+def test_initialization_uses_database_from_uri_when_env_database_is_missing(
+    monkeypatch,
+):
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    client = MagicMock()
+    default_database = MagicMock()
+    default_database.name = "airquality"
+    client.get_default_database.return_value = default_database
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+
+    database_client = MongoDBClient(
+        uri="mongodb+srv://example.mongodb.net/airquality",
+        client=client,
+    )
+
+    client.get_default_database.assert_called_once_with(default=None)
+    client.__getitem__.assert_called_once_with("airquality")
+    assert database_client.database is database
+
+
 def test_insert_air_quality_returns_inserted_id(mongo_client):
     database_client, _, collections = mongo_client
     document = {

@@ -38,7 +38,12 @@ def test_send_metrics_posts_datadog_v2_series(datadog):
         {
             "metric": "pipeline.records.valid",
             "type": 3,
-            "points": [[timestamp.timestamp(), 12]],
+            "points": [
+                {
+                    "timestamp": int(timestamp.timestamp()),
+                    "value": 12,
+                }
+            ],
             "tags": ["env:test"],
         }
     ]
@@ -66,7 +71,7 @@ def test_send_logs_posts_structured_log(datadog):
     )
 
     args, kwargs = http_client.post.call_args
-    assert args == ("/api/v2/logs",)
+    assert args == ("https://http-intake.logs.datadoghq.com/api/v2/logs",)
     assert kwargs["headers"] == {"DD-API-KEY": "test-api-key"}
     log = kwargs["json"][0]
     assert log["message"] == "Fetched measurements"

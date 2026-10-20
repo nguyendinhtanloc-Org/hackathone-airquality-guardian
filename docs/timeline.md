@@ -1,0 +1,754 @@
+# AirQuality Guardian - Timeline & Phân công công việc
+
+**Đội: 2 người**
+**Thời gian làm việc: 5-6 tiếng/ngày mỗi người**
+**Mục tiêu: Học hỏi + Deploy lên cloud + Quay video demo**
+
+---
+
+## Tổng quan timeline
+
+```
+GIAI ĐOẠN 1: CHUẨN BỊ         │ 17 ngày
+GIAI ĐOẠN 2: BUILD            │ 15 ngày (17-31/10)
+GIAI ĐOẠN 3: NỘP BÀI          │ 1 ngày (31/10)
+GIAI ĐOẠN 4: CHỜ KẾT QUẢ      │ 8 ngày (01-08/11)
+```
+
+---
+
+## GIAI ĐOẠN 1: CHUẨN BỊ (Trước ngày 17/10)
+
+> **Mục tiêu:** Hoàn thành 70% code skeleton, không cần tài khoản thật
+
+### Người 1: Data Pipeline
+
+```
+NGÀY 1 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Tạo GitHub repository
+   - Tên repo: airquality-guardian
+   - Mô tả: Self-Healing Data Pipeline cho Air Quality Monitoring
+   - Public, có README
+
+□ Setup project structure
+   mkdir -p src/{fetcher,validation,self_healing,api,models}
+   mkdir -p tests/{unit,integration}
+   mkdir -p docs config data logs
+
+□ Tạo requirements.txt với các thư viện:
+   - pymongo, httpx, pandas, pydantic
+   - datadog, loguru, python-dotenv
+   - pytest
+
+□ Tạo .env.example:
+   MONGODB_URI=mongodb+srv://...
+   OPENAQ_API_URL=https://api.openaq.org/v2/latest
+   DATADOG_API_KEY=...
+
+□ Tạo .gitignore:
+   - .env, __pycache__/, venv/
+   - data/, logs/, *.log
+
+□ Commit và push lên branch: data-pipeline
+
+───────────────────────────────────────────────────
+
+NGÀY 2 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Viết mock data (mock_openaq_response.json):
+   - Lấy format từ OpenAQ docs
+   - Tạo 5-10 sample records
+
+□ Viết src/fetcher/fetcher.py:
+   - Class DataFetcher
+   - Method fetch() với httpx async
+   - Retry logic với exponential backoff
+   - Timeout handling
+
+□ Viết src/validation/validator.py:
+   - Class DataValidator
+   - Method validate() - parse và validate data
+   - Schema validation
+   - Value validation
+
+□ Viết unit tests cho fetcher và validator
+
+□ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 3 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Viết src/models/sensor_data.py:
+   - Measurement model
+   - SensorData model
+   - AirQualityDocument model
+   - AQI Levels definition
+
+□ Viết src/main.py:
+   - Class Pipeline
+   - Method run_once()
+   - Method run_loop()
+   - Graceful shutdown
+
+□ Test với mock data (không cần API thật)
+
+□ Dockerize:
+   - Dockerfile
+   - docker-compose.yml
+
+□ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 4-5 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Viết docs/ARCHITECTURE.md:
+   - Sơ đồ kiến trúc
+   - Data flow
+   - Các thành phần
+
+□ Hoàn thiện README.md:
+   - Project description
+   - Setup instructions
+   - Architecture overview
+
+□ Review code, fix bugs
+
+□ Push lên GitHub (branch: data-pipeline)
+
+□ Merge vào main (nếu Người 2 đã xong phần mình)
+```
+
+### Người 2: Self-Healing + Ops
+
+```
+NGÀY 1 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Đọc tài liệu MongoDB Time Series:
+   - https://www.mongodb.com/docs/manual/core/timeseries/
+   - Ví dụ về Time Series collections
+
+□ Đọc tài liệu Datadog:
+   - Dashboard docs
+   - Monitors docs
+   - Log management docs
+
+□ Setup MongoDB Atlas (free tier):
+   - Tạo account
+   - Tạo cluster (M0 Sandbox)
+   - Tạo database: airquality
+   - Tạo collections:
+     * air_quality (Time Series)
+     * quarantine_events
+     * pipeline_status
+
+□ Test kết nối từ local
+
+□ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 2 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Viết src/self_healing/engine.py:
+   - Class Incident
+   - Class QuarantinedData
+   - Class SelfHealingEngine
+   - Method handle_error()
+   - Method should_retry()
+   - Method quarantine_data()
+   - Method replay_quarantined()
+
+□ Viết src/self_healing/quarantine.py:
+   - Class QuarantineManager
+   - Method add_to_quarantine()
+   - Method replay()
+   - Method cleanup()
+
+□ Viết unit tests cho self-healing
+
+□ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 3 (Trước 17/10)
+═══════════════════════════════════════════════════
+□ Viết src/database/mongodb.py:
+   - Class MongoDBClient
+   - Method insert_air_quality()
+   - Method insert_quarantine()
+   - Method update_pipeline_status()
+   - Method query_air_quality()
+   - Method aggregate_aqi()
+
+□ Tạo MongoDB indexes:
+   - Index trên timestamp
+   - Index trên location_id
+
+□ Viết unit tests cho MongoDB operations
+
+□ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 4 (Trước 17/10)
+═══════════════════════════════════════════════════
+☑ Viết src/datadog/integrator.py:
+   - Class DatadogIntegrator
+   - Method send_metrics()
+   - Method send_logs()
+   - Method create_monitor()
+
+☑ Tạo Datadog Dashboard template (JSON):
+   - Pipeline health panel
+   - Self-healing metrics panel
+   - AQI overview panel
+   - Logs panel
+
+☑ Tạo Datadog Monitors template (JSON):
+   - Pipeline degraded monitor
+   - Quarantine overflow monitor
+   - AQI unhealthy monitor
+
+☑ Unit tests cho Datadog API requests (mock)
+
+☑ Commit
+
+───────────────────────────────────────────────────
+
+NGÀY 5 (Trước 17/10)
+═══════════════════════════════════════════════════
+☑ Viết src/pipeline.py với run_once() fetch → validate → MongoDB
+
+☑ Viết tests/integration/test_pipeline.py:
+   - Test fetcher → validator → MongoDB flow
+   - Test self-healing flow
+
+□ Review code của Người 1
+
+☑ Merge branches (data-pipeline đã được merge vào selfhealing)
+
+☑ Integration test (external services được mock)
+
+□ Push lên GitHub (branch: self-healing)
+```
+
+---
+
+## GIAI ĐOẠN 2: BUILD (20-31/10) — MVP chạy thật + demo
+
+> **Mục tiêu chung:** Hệ thống chạy end-to-end với MongoDB Atlas + Datadog thật, tự phục hồi khi lỗi, và có video demo.
+> **Cách chia:** Mỗi người giữ một "nhánh sở hữu" — code của người này không bị người kia sửa mà không hỏi.
+
+**Trạng thái hiện tại:**
+
+```
+GIAI ĐOẠN 1: CHUẨN BỊ    │ ✅ XONG (cả 2 người) — 50/50 tests pass
+GIAI ĐOẠN 2: BUILD         │ 🔄 ĐANG LÀM — bắt đầu 20/10
+GIAI ĐOẠN 3: NỘP BÀI       │ ○ 31/10
+GIAI ĐOẠN 4: CHỜ KẾT QUẢ   │ ○ 01-08/11
+```
+
+### Bảng phân công
+
+| Ngày | NGƯỜI 1 — Data Pipeline & Tích hợp | NGƯỜI 2 — Ops, Datadog & Tài liệu |
+|------|------------------------------------|-------------------------------------|
+| **20/10 (T4)** | 2.1 Nối `SelfHealingEngine` vào `Pipeline`: fetch fail → retry → hết số lần → quarantine | 2.7 Viết `scripts/apply_datadog.py`: apply `config/datadog/dashboard.json` + `monitors.json` lên Datadog thật |
+| **21/10 (T5)** | 2.2 Retry loop + exponential backoff cho `DataFetcher.fetch()` (hiện `max_retries` đọc từ env nhưng **chưa dùng**) | 2.8 Verify MongoDB Atlas thật: insert → `query_air_quality` → `aggregate_aqi` trả đúng số |
+| **22/10 (T6)** | 2.3 Ghi `pipeline_status` vào MongoDB mỗi lần chạy (`running` → `degraded`/`stopped`) | 2.9 `docs/DATADOG.md`: dashboard, 3 monitor, ý nghĩa từng metric |
+| **23/10 (T7)** | 2.4 Incident → Datadog log + metric `pipeline.records.failed`, `pipeline.incidents.count` | 2.10 `docs/SELF_HEALING.md`: retry → quarantine → replay, config, cách demo lỗi |
+| **24/10 (T8)** | 2.5 Lệnh `python -m src.main --replay` để replay dữ liệu từ quarantine | 2.11 `docs/DATA_MODEL.md`: schema `air_quality`, `quarantine_events`, `pipeline_status` |
+| **25/10 (CN)** | 2.6 End-to-end test: fail → retry → quarantine → replay → insert | 2.12 Setup Datadog thật: dashboard + 3 monitor, chụp screenshot |
+| **26/10 (T2)** | Fix bug từ E2E test | Quay kịch bản video demo (10 phút) |
+| **27/10 (T3)** | Deploy lên cloud (chọn 1: AWS ECS / GCP Cloud Run / Azure Container Apps — free tier) | Chuẩn bị slide thuyết trình (5-7 slide) |
+| **28/10 (T4)** | Verify trên cloud: data chảy vào Atlas, dashboard update | Test cảnh báo thật: AQI cao → monitor trigger → Slack |
+| **29/10 (T5)** | Test recovery: tắt network → retry → quarantine → bật lại → replay | Quay video demo (OBS Studio, màn hình cloud + webcam) |
+| **30/10 (T6)** | Review toàn bộ code, đọc lại README, kiểm tra docs khớp code | Dựng slide, tập trình luyện 1 lần |
+| **31/10 (T7)** | **NỘP BÀI 23:59 ICT** | **NỘP BÀI 23:59 ICT** |
+
+### Chi tiết hạng mục Người 1 — Data Pipeline & Tích hợp
+
+```
+2.1 Tích hợp Self-Healing vào Pipeline
+   File: src/pipeline.py
+   - Pipeline nhận SelfHealingEngine qua constructor
+   - run_once() bọc fetch trong try/except
+   - Lỗi → engine.handle_error() → trả Incident
+   - Verify: test fetch raise → incident được ghi, không crash
+
+2.2 Retry loop + exponential backoff
+   File: src/fetcher/fetcher.py
+   - Hiện có self.max_retries = int(os.getenv("MAX_RETRIES", "3")) nhưng KHÔNG dùng
+   - Thêm vòng lặp retry: 3 lần, backoff 30s → 60s → 120s
+   - Chỉ retry lỗi retryable (TimeoutError, ConnectionError)
+   - Verify: test timeout 2 lần rồi thành công → 1 lần gọi thêm
+
+2.3 Ghi pipeline_status
+   File: src/pipeline.py
+   - Đầu run: update_pipeline_status("running", ...)
+   - Thành công: status="running", metrics={...}
+   - Có incident chưa replay được: status="degraded"
+   - Verify: test upsert đúng status/metrics
+
+2.4 Incident lên Datadog
+   File: src/main.py
+   - Gửi log status="error" cho mỗi incident
+   - Thêm metric pipeline.records.failed, pipeline.incidents.count
+   - Verify: test main() với fetcher fail → datadog.send_logs được gọi
+
+2.5 Lệnh replay
+   File: src/main.py (argparse)
+   - python -m src.main --replay
+   - Đọc quarantine_events status="pending" → chạy lại pipeline → đánh dấu "replayed"
+   - Verify: test replay đưa 1 record từ pending → replayed
+
+2.6 End-to-end test
+   File: tests/integration/test_self_healing_flow.py
+   - Kịch bản 1: fetch OK → 6 measurement → insert Atlas
+   - Kịch bản 2: fetch fail 3 lần → quarantine 1 record → status degraded
+   - Kịch bản 3: replay → insert thành công → status running
+```
+
+### Chi tiết hạng mục Người 2 — Ops, Datadog & Tài liệu
+
+```
+2.7 Script apply Datadog
+   File: scripts/apply_datadog.py
+   - Đọc config/datadog/dashboard.json → POST /api/v1/dashboard
+   - Đọc config/datadog/monitors.json → POST /api/v1/monitor cho từng cái
+   - Cần DATADOG_API_KEY + DATADOG_APP_KEY
+   - Verify: chạy script → dashboard + 3 monitor xuất hiện trên Datadog UI
+
+2.8 Verify MongoDB Atlas thật
+   - MONGODB_URI trong .env
+   - insert 1 doc → query_air_quality() → aggregate_aqi()
+   - Kiểm tra index trên timestamp và metadata.location_id đã tạo
+   - Verify: chạy script, in ra kết quả thật từ Atlas
+
+2.9 docs/DATADOG.md
+   - 4 widget trong dashboard: tên, ý nghĩa, metric gốc
+   - 3 monitor: điều kiện trigger, mức độ nghiêm trọng, kênh cảnh báo
+   - Ảnh chụp thật từ Datadog UI
+
+2.10 docs/SELF_HEALING.md
+   - Sơ đồ: lỗi → phân loại retryable → retry → quarantine → replay
+   - Bảng lỗi nào retry được, lỗi nào không
+   - Config: MAX_RETRIES, RETRY_BACKOFF_SECONDS, QUARANTINE_RETENTION_DAYS
+   - Hướng dẫn demo lỗi cho video (mục 29/10)
+
+2.11 docs/DATA_MODEL.md
+   - Schema air_quality: event_id, metadata.location_id, timestamp, measurements, aqi
+   - Schema quarantine_events: event_id, raw_data, error_type, retry_count, status
+   - Schema pipeline_status: status, last_fetch, metrics, incidents
+   - Chỉ mục (indexes) và truy vấn mẫu
+
+2.12 Setup Datadog thật
+   - Apply dashboard + monitors
+   - Screenshot từng widget
+   - Gửi test log để verify log stream
+```
+
+### Điều kiện checkpoint
+
+| Ngày | Checkpoint | Nếu chưa đạt |
+|------|-----------|--------------|
+| 25/10 | Data chảy vào Atlas + Datadog dashboard có số liệu | Dùng buffer 26/10, cắt 2.11 |
+| 28/10 | Deploy cloud chạy được | Dùng video demo thay deploy live (thể lệ cho phép "bản demo có thể truy cập") |
+| 29/10 | Quay xong video 10 phút | Rút còn 7 phút, bỏ phần AQI alert |
+| 30/10 | Slide xong, code review xong | Cắt docs/DATA_MODEL.md chi tiết, giữ bản rút gọn |
+
+### Nguyên tắc phối hợp
+
+```
+NHÁNH:
+  Người 1: data-pipeline     (sở hữu src/fetcher, src/validation, src/aqi, src/models, src/pipeline.py)
+  Người 2: self-healing-ops  (sở hữu src/self_healing, src/database, src/datadog, config/, scripts/, docs/)
+
+GIAO DIỆN GIỮA HAI BÊN (đã chốt, không đổi):
+  - Pipeline(fetcher, validator, database, aqi_calculator) + SelfHealingEngine
+  - MongoDBClient.insert_air_quality(document) — document có event_id, metadata.location_id,
+    timestamp (datetime UTC), measurements, aqi
+  - DatadogIntegrator.send_metrics(dict) / send_logs(dict) / create_monitor(dict)
+  - Tên metric cố định: pipeline.records.fetched, pipeline.records.valid,
+    pipeline.records.inserted, pipeline.records.failed, pipeline.fetch.latency,
+    datavalue.aqi.current
+
+QUY TẮC:
+  - Muốn đổi interface → báo trong chat trước, không tự đổi
+  - Sửa file của người kia → nhắn trước
+  - Merge vào develop mỗi tối, không merge thẳng vào main
+  - Test phải pass (pytest tests/) trước khi push
+```
+
+---
+
+## Timeline gốc của Giai đoạn 2 (tham khảo)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    TUẦN 1: HOÀN THÀNH MVP                     │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 17: LỄ KHỞI ĐỘNG                                      │
+├─────────────────────────────────────────────────────────────┤
+│ SÁNG    │ Workshop MongoDB (12:00-13:00)                      │
+│          │ - Q&A với MongoDB experts                         │
+│          │ - Hỏi về Time Series                             │
+│                                                         │
+│ CHIỀU   │ Workshop Datadog (12:00-13:00)                    │
+│          │ - Q&A với Datadog experts                         │
+│          │ - Hỏi về Monitors, Logs                        │
+│                                                         │
+│ TỐI     │ Setup tài khoản thật                              │
+│          │ □ MongoDB Atlas (đã có)                          │
+│          │ □ Datadog (email work để activate)              │
+│          │ □ Test kết nối thật                             │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 18-19: HOÀN THIỆN DATA PIPELINE                       │
+├─────────────────────────────────────────────────────────────┤
+│ □ Tích hợp fetcher với OpenAQ API thật                    │
+│ □ Hoàn thiện retry logic (3 lần, exponential backoff)       │
+│ □ Test API với dữ liệu thật                               │
+│                                                         │
+│ □ Hoàn thiện validator                                    │
+│ □ Viết AQI calculation (EPA standard)                      │
+│ □ Test với dữ liệu thật từ OpenAQ                        │
+│                                                         │
+│ □ Kết nối data pipeline:                                  │
+│   fetcher → validator → MongoDB                            │
+│                                                         │
+│ □ Test end-to-end                                         │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 20-21: HOÀN THIỆN SELF-HEALING + MONITORING         │
+├─────────────────────────────────────────────────────────────┤
+│ □ Test self-healing với mock errors                        │
+│ □ Test retry logic                                        │
+│ □ Test quarantine và replay                               │
+│                                                         │
+│ □ Setup Datadog Dashboard thật                           │
+│ □ Setup Datadog Monitors thật                            │
+│ □ Setup Datadog Logs thật                                │
+│                                                         │
+│ □ Test monitoring:                                        │
+│   - Verify dashboard hiển thị đúng                      │
+│   - Verify monitors trigger alert đúng                   │
+│   - Verify logs stream đúng                              │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 22-23: MVP HOÀN CHỈNH                                │
+├─────────────────────────────────────────────────────────────┤
+│ □ Fix bugs còn lại                                       │
+│ □ Optimize code                                         │
+│ □ Thêm error handling                                    │
+│ □ Thêm logging                                          │
+│                                                         │
+│ □ Test toàn bộ flow:                                    │
+│   - Fetch → Validate → MongoDB → Datadog                  │
+│   - Self-healing → Retry → Quarantine → Replay            │
+│                                                         │
+│ □ MVP DEMO:                                             │
+│   □ Data chảy vào MongoDB thật                          │
+│   □ Dashboard hiển thị thật                              │
+│   □ Self-healing hoạt động                              │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 24: MVP CHECKPOINT                                    │
+├─────────────────────────────────────────────────────────────┤
+│ □ MVP phải CHẠY ĐƯỢC:                                   │
+│   □ Fetch dữ liệu từ OpenAQ                             │
+│   □ Insert vào MongoDB                                   │
+│   □ Dashboard hiển thị metrics                          │
+│   □ Self-healing retry khi có lỗi                      │
+│                                                         │
+│ □ Nếu chưa xong → Buffer ngày 24-25                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Tuần 2: 25-31/10
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    TUẦN 2: DEPLOY + DEMO                     │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 25-26: DEPLOY LÊN CLOUD                             │
+├─────────────────────────────────────────────────────────────┤
+│ □ Setup CI/CD:                                           │
+│   - GitHub Actions                                       │
+│   - Build Docker image                                   │
+│   - Deploy lên:                                        │
+│     * AWS ECS / GCP Cloud Run / Azure Container Apps     │
+│     (chọn 1 trong 3, đều có free tier)                │
+│                                                         │
+│ □ Setup environment variables trên cloud                  │
+│ □ Setup MongoDB connection từ cloud                    │
+│ □ Setup Datadog Agent trên cloud (nếu cần)            │
+│                                                         │
+│ □ Test deployment:                                      │
+│   □ Pipeline chạy trên cloud                            │
+│   □ Data chảy vào MongoDB Atlas                        │
+│   □ Dashboard update real-time                           │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 27-28: SELF-HEALING + ALERTING TEST                 │
+├─────────────────────────────────────────────────────────────┤
+│ □ Test timeout scenario:                                 │
+│   - Tắt network → Hệ thống retry 3 lần                │
+│   - Quarantine dữ liệu lỗi                             │
+│   - Alert được gửi                                     │
+│                                                         │
+│ □ Test recovery scenario:                                │
+│   - Bật lại network → Hệ thống hồi phục              │
+│   - Replay dữ liệu từ quarantine                       │
+│   - Alert được resolve                                 │
+│                                                         │
+│ □ Test AQI alerting:                                    │
+│   - Inject dữ liệu AQI cao → Alert trigger            │
+│   - Verify Slack notification                          │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 29-30: QUAY DEMO VIDEO                              │
+├─────────────────────────────────────────────────────────────┤
+│ □ CHUẨN BỊ:                                            │
+│   - Viết script/demo (10 phút)                          │
+│   - Slide thuyết trình (5-7 slides)                     │
+│   - Outline nội dung                                    │
+│                                                         │
+│ □ QUAY VIDEO:                                           │
+│   - Phần 1 (2 phút): Giới thiệu bài toán             │
+│   - Phần 2 (3 phút): Pipeline hoạt động bình thường   │
+│   - Phần 3 (3 phút): Self-healing demo                 │
+│   - Phần 4 (2 phút): Kết quả và metrics               │
+│                                                         │
+│ □ TOOL QUAY:                                            │
+│   - OBS Studio (miễn phí)                              │
+│   - Loa và mic đã có                                   │
+│   - Quay màn hình cloud + webcam                       │
+├─────────────────────────────────────────────────────────────┤
+│ NGÀY 31: FINAL REVIEW + NỘP BÀI                         │
+├─────────────────────────────────────────────────────────────┤
+│ □ REVIEW:                                                │
+│   - Đọc lại code                                       │
+│   - Đọc lại README                                     │
+│   - Đảm bảo đủ thông tin                             │
+│                                                         │
+│ □ NỘP BÀI (23:59 ICT):                                │
+│   □ Repository link                                     │
+│   □ README.md                                          │
+│   □ Video demo                                         │
+│   □ Slide thuyết trình                                 │
+│   □ Hướng dẫn cài đặt                                 │
+│   □ Khai báo dataset (OpenAQ)                          │
+│   □ Khai báo công cụ AI (Claude)                      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## GIAI ĐOẠN 3: NỘP BÀI (31/10)
+
+### Checklist nộp bài
+
+```
+HỒ SƠ NỘP BÀI (theo thể lệ 7.2)
+═══════════════════════════════════════════════════════════════
+
+□ Tên dự án và mô tả bài toán
+   → "AirQuality Guardian - Self-Healing Data Pipeline"
+
+□ Thông tin đội và thông tin liên hệ
+   → Team name, members, contact
+
+□ Kiến trúc giải pháp và ứng dụng
+   → docs/ARCHITECTURE.md
+
+□ Kiến trúc dữ liệu và data model trên MongoDB
+   → docs/DATA_MODEL.md
+
+□ Kiến trúc observability trên Datadog
+   → docs/DATADOG.md
+
+□ Link repository mã nguồn và hướng dẫn cài đặt
+   → GitHub repo + README.md
+
+□ README mô tả yêu cầu môi trường, cách triển khai
+   → README.md
+
+□ MVP chạy được hoặc bản demo có thể truy cập
+   → Cloud URL / Video demo
+
+□ Video demo
+   → Video file (10 phút)
+
+□ Slide thuyết trình chung kết
+   → PDF / PowerPoint
+
+□ Mô tả sự cố hoặc tình huống vận hành được trình diễn
+   → Trong video + docs/INCIDENT_SCENARIO.md
+
+□ Khai báo thành phần tái sử dụng, dataset bên ngoài
+   □ Dataset: OpenAQ (CC0 License)
+   □ Công cụ AI: Claude (Anthropic)
+   □ Libraries: requests, pymongo, etc.
+```
+
+---
+
+## GIAI ĐOẠN 4: CHỜ KẾT QUẢ (01-08/11)
+
+```
+01-04/11  │ Chấm sơ loại
+            │ Giám khảo đánh giá bài nộp
+
+05/11      │ Công bố 8 đội vào chung kết
+            │ (Nếu vào top 8 → Chuẩn bị thuyết trình)
+
+08/11      │ Chung kết online (dự kiến)
+            │ - Thuyết trình 10 phút
+            │ - Q&A với giám khảo
+            │ - Công bố kết quả
+```
+
+---
+
+## Communication Plan
+
+```
+HÀNG NGÀY:
+─────────────────────────────────────────────────────────────
+SÁNG (9:00):
+   Team chat: "Hôm nay làm gì?"
+
+TỐI (21:00):
+   Team chat: 
+   - "Đã xong: A, B"
+   - "Đang làm: C"
+   - "Bị stuck: D"
+
+GITHUB:
+─────────────────────────────────────────────────────────────
+□ Mỗi người làm trên branch riêng:
+   - Người 1: data-pipeline
+   - Người 2: self-healing-ops
+
+□ Khi xong feature → Tạo PR
+
+□ Team review PR trước khi merge
+
+□ Merge vào main hàng ngày
+
+DOCUMENTATION:
+─────────────────────────────────────────────────────────────
+□ Shared Google Docs/Notion:
+   - Quyết định kiến trúc
+   - API contracts
+   - Troubleshooting guide
+
+□ Trong code:
+   - Comments rõ ràng
+   - Docstrings đầy đủ
+```
+
+---
+
+## Checklist trước ngày 17/10
+
+```
+NGƯỜI 1 CẦN XONG:
+─────────────────────────────────────────────────────────────
+□ GitHub repo đã tạo
+□ Project structure đã setup
+□ requirements.txt đã viết
+□ src/fetcher/fetcher.py
+□ src/validation/validator.py
+□ src/models/sensor_data.py
+□ src/main.py
+□ Mock data đã tạo
+□ Docker files đã tạo
+□ README.md đã viết
+□ Unit tests đã viết
+□ Push lên GitHub
+
+NGƯỜI 2 CẦN XONG:
+─────────────────────────────────────────────────────────────
+□ MongoDB Atlas cluster đã setup
+□ src/self_healing/engine.py
+□ src/self_healing/quarantine.py
+□ src/database/mongodb.py
+□ src/datadog/integrator.py
+□ Datadog Dashboard template
+□ Datadog Monitors template
+□ Unit tests đã viết
+□ Push lên GitHub
+
+CẢ HAI CẦN XONG:
+─────────────────────────────────────────────────────────────
+□ Có communication channel (Discord/Slack/Zalo)
+□ Có shared docs (Google Docs/Notion)
+□ Đã họp lên kế hoạch
+□ Phân công rõ ràng
+```
+
+---
+
+## Nếu bị stuck?
+
+```
+VẤN ĐỀ THƯỜNG GẶP:
+─────────────────────────────────────────────────────────────
+
+1. Không kết nối được MongoDB Atlas
+   → Kiểm tra IP whitelist
+   → Kiểm tra connection string
+   → Xem MongoDB Atlas status page
+
+2. Không fetch được OpenAQ API
+   → Check rate limit
+   → Check API endpoint
+   → Thử với Postman/curl
+
+3. Datadog không nhận logs
+   → Kiểm tra API key
+   → Kiểm tra log format
+   → Xem Datadog status page
+
+4. Deployment fail trên cloud
+   → Check Docker build logs
+   → Check environment variables
+   → Check cloud quotas
+
+HỖ TRỢ:
+─────────────────────────────────────────────────────────────
+□ Workshop 17/10: Hỏi MongoDB & Datadog experts
+□ Email: mugvnleaders@gmail.com
+□ Discord/Slack: Team channel
+```
+
+---
+
+## Liên hệ
+
+```
+BAN TỔ CHỨC:
+□ Email: mugvnleaders@gmail.com
+□ Website: https://mini-hackathon-sep-2026.mugvn.com/
+□ Thể lệ: https://mini-hackathon-sep-2026.mugvn.com/terms
+
+DATASET:
+□ OpenAQ: https://openaq.org/
+□ Docs: https://docs.openaq.org/
+
+DOCUMENTATION:
+□ MongoDB Time Series: https://www.mongodb.com/docs/manual/core/timeseries/
+□ Datadog: https://docs.datadoghq.com/
+```
+
+---
+
+## Ghi chú
+
+```
+Ngày cập nhật: [HIỆN TẠI]
+Người cập nhật: [TÊN CỦA BẠN]
+Phiên bản: 1.0
+```
+
+---
+
+**Chúc các bạn hoàn thành tốt dự án! 🚀**

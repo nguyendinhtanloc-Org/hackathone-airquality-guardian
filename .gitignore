@@ -263,6 +263,7 @@ data/raw/
 data/processed/
 *.csv
 *.json
+!config/datadog/*.json
 
 # Datadog
 .datadog/
@@ -270,3 +271,7 @@ data/processed/
 # OS
 .DS_Store
 Thumbs.db
+
+
+# Tai lieu
+.docs

@@ -7,9 +7,9 @@ import os
 from dotenv import load_dotenv
 from loguru import logger
 
-from fetcher.fetcher import DataFetcher
-from validation.validator import DataValidator
-from aqi.calculator import AQICalculator
+from src.fetcher.fetcher import DataFetcher
+from src.validation.validator import DataValidator
+from src.aqi.calculator import AQICalculator
 
 load_dotenv()
 

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   pipeline:
     build: .
@@ -8,4 +6,25 @@ services:
       - .env
     volumes:
       - ./logs:/app/logs
+    environment:
+      - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Development service
+  pipeline-dev:
+    build: .
+    container_name: airquality-pipeline-dev
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    command: python -m src.main
+    profiles:
+      - dev

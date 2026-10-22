@@ -9,6 +9,7 @@ from uuid import uuid4
 from src.aqi.calculator import AQICalculator
 from src.database.mongodb import MongoDBClient
 from src.fetcher.fetcher import DataFetcher
+from src.self_healing.engine import Incident, SelfHealingEngine
 from src.validation.validator import DataValidator
 
 
@@ -23,6 +24,8 @@ class PipelineRunResult:
     records_failed: int
     duration_seconds: float
     documents: tuple[dict[str, Any], ...]
+    incident: Incident | None = None
+    status: str = "running"
 
 
 class Pipeline:
@@ -34,26 +37,50 @@ class Pipeline:
         validator: DataValidator,
         database: MongoDBClient,
         aqi_calculator: AQICalculator | None = None,
+        self_healing_engine: SelfHealingEngine | None = None,
     ) -> None:
         self.fetcher = fetcher
         self.validator = validator
         self.database = database
         self.aqi_calculator = aqi_calculator or AQICalculator()
+        self.self_healing_engine = self_healing_engine or SelfHealingEngine()
 
     async def run_once(
         self,
         params: dict[str, Any] | None = None,
     ) -> PipelineRunResult:
-        """Fetch, validate, persist, and summarize one execution."""
+        """Fetch, validate, persist, and summarize one execution.
+
+        A failing fetch is reported through the returned result instead of
+        raising, so the caller can record the incident and degrade
+        gracefully.
+        """
         started_at = perf_counter()
         request_params = params or {}
-        response = await self.fetcher.fetch(request_params)
-        if response is None:
-            raise RuntimeError("Air-quality fetch failed; no data was persisted.")
+        location_id = request_params.get("location_id", 4946813)
+
+        try:
+            response = await self.fetcher.fetch(request_params)
+        except Exception as error:
+            incident = self.self_healing_engine.handle_error(
+                error,
+                data=request_params,
+                component="fetcher",
+            )
+            return PipelineRunResult(
+                location_id=location_id,
+                records_fetched=0,
+                records_valid=0,
+                records_inserted=0,
+                records_failed=0,
+                duration_seconds=perf_counter() - started_at,
+                documents=(),
+                incident=incident,
+                status="degraded",
+            )
 
         fetched_count = len(response.get("results", []))
         measurements = self.validator.validate(response)
-        location_id = request_params.get("location_id", 4946813)
         inserted_documents: list[dict[str, Any]] = []
         for measurement in measurements:
             timestamp = self._parse_timestamp(measurement.last_updated)

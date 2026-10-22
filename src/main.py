@@ -15,6 +15,7 @@ from src.aqi.calculator import AQICalculator
 from src.database.mongodb import MongoDBClient
 from src.datadog.integrator import DatadogIntegrator
 from src.pipeline import Pipeline
+from src.self_healing.engine import SelfHealingEngine
 
 load_dotenv()
 
@@ -32,9 +33,17 @@ async def main() -> None:
     )
     fetcher = DataFetcher()
     validator = DataValidator()
-    pipeline = Pipeline(fetcher, validator, database)
+    self_healing_engine = SelfHealingEngine()
+    pipeline = Pipeline(fetcher, validator, database, self_healing_engine=self_healing_engine)
     try:
         result = await pipeline.run_once({"location_id": 4946813})
+        if result.incident is not None:
+            logger.error(
+                "Pipeline incident on component {}: {} (retryable={})",
+                result.incident.component,
+                result.incident.error,
+                result.incident.retryable,
+            )
         logger.info(
             "Pipeline run complete: location_id={} fetched={} valid={} "
             "inserted={} failed={} duration_seconds={:.2f}",

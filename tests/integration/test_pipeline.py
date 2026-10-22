@@ -78,13 +78,16 @@ async def test_fetch_validate_and_persist_flow(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_fetch_is_not_silently_treated_as_success():
     fetcher = MagicMock(spec=DataFetcher)
-    fetcher.fetch.return_value = None
+    fetcher.fetch.side_effect = ConnectionError("connection reset")
     database = MagicMock(spec=MongoDBClient)
     pipeline = Pipeline(fetcher, DataValidator(), database)
 
-    with pytest.raises(RuntimeError, match="fetch failed"):
-        await pipeline.run_once()
+    result = await pipeline.run_once()
 
+    assert result.incident is not None
+    assert result.status == "degraded"
+    assert result.records_inserted == 0
+    assert result.incident.error_type == "ConnectionError"
     database.insert_air_quality.assert_not_called()
 
 

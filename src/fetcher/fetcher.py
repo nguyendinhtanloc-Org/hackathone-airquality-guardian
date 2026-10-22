@@ -9,6 +9,10 @@ import os
 from loguru import logger
 
 
+class AirQualityFetchError(Exception):
+    """A fetch failure that retrying cannot fix (bad request, not found, ...)."""
+
+
 class DataFetcher:
     """Fetches air quality data from OpenAQ API v3"""
     
@@ -46,9 +50,12 @@ class DataFetcher:
             logger.warning(f"Failed to get sensor {sensor_id}: {e}")
         return {}
     
-    async def fetch(self, params: dict = None) -> dict | None:
+    async def fetch(self, params: dict = None) -> dict:
         """
-        Fetch latest measurements
+        Fetch latest measurements.
+
+        Raises TimeoutError or ConnectionError for transient failures that
+        are worth retrying, and AirQualityFetchError for permanent ones.
         """
         params = params or {}
         location_id = params.get("location_id", 4946813)
@@ -91,12 +98,23 @@ class DataFetcher:
                 logger.info(f"Cache size: {len(self._sensor_cache)} sensors")
                 return data
                 
-        except httpx.TimeoutException:
-            logger.error("Request timeout")
-            return None
-        except httpx.HTTPError as e:
-            logger.error(f"HTTP error: {e}")
-            return None
+        except httpx.TimeoutException as error:
+            logger.error(f"Request timeout: {error}")
+            raise TimeoutError(f"OpenAQ request timed out: {error}") from error
+        except httpx.HTTPStatusError as error:
+            status_code = error.response.status_code
+            if status_code >= 500:
+                logger.error(f"OpenAQ server error {status_code}: {error}")
+                raise ConnectionError(
+                    f"OpenAQ server error {status_code}: {error}"
+                ) from error
+            logger.error(f"OpenAQ client error {status_code}: {error}")
+            raise AirQualityFetchError(
+                f"OpenAQ rejected the request with status {status_code}: {error}"
+            ) from error
+        except httpx.HTTPError as error:
+            logger.error(f"HTTP error: {error}")
+            raise ConnectionError(f"OpenAQ request failed: {error}") from error
     
     def clear_cache(self):
         """Xóa cache"""

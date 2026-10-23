@@ -33,7 +33,9 @@ async def main() -> None:
     )
     fetcher = DataFetcher()
     validator = DataValidator()
-    self_healing_engine = SelfHealingEngine()
+    self_healing_engine = SelfHealingEngine(
+        max_retries=int(os.getenv("MAX_RETRIES", "3"))
+    )
     pipeline = Pipeline(fetcher, validator, database, self_healing_engine=self_healing_engine)
     try:
         result = await pipeline.run_once({"location_id": 4946813})

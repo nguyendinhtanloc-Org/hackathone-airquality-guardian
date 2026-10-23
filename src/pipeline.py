@@ -1,10 +1,14 @@
 """Orchestrate one fetch, validation, and MongoDB persistence cycle."""
 
+import asyncio
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 from uuid import uuid4
+
+from loguru import logger
 
 from src.aqi.calculator import AQICalculator
 from src.database.mongodb import MongoDBClient
@@ -26,6 +30,7 @@ class PipelineRunResult:
     documents: tuple[dict[str, Any], ...]
     incident: Incident | None = None
     status: str = "running"
+    attempts: int = 1
 
 
 class Pipeline:
@@ -38,12 +43,18 @@ class Pipeline:
         database: MongoDBClient,
         aqi_calculator: AQICalculator | None = None,
         self_healing_engine: SelfHealingEngine | None = None,
+        backoff_seconds: float | None = None,
     ) -> None:
         self.fetcher = fetcher
         self.validator = validator
         self.database = database
         self.aqi_calculator = aqi_calculator or AQICalculator()
         self.self_healing_engine = self_healing_engine or SelfHealingEngine()
+        self.backoff_seconds = (
+            backoff_seconds
+            if backoff_seconds is not None
+            else float(os.getenv("RETRY_BACKOFF_SECONDS", "30"))
+        )
 
     async def run_once(
         self,
@@ -53,31 +64,50 @@ class Pipeline:
 
         A failing fetch is reported through the returned result instead of
         raising, so the caller can record the incident and degrade
-        gracefully.
+        gracefully. Transient failures are retried with exponential
+        backoff; the self-healing engine decides whether a failure is
+        worth retrying.
         """
         started_at = perf_counter()
         request_params = params or {}
         location_id = request_params.get("location_id", 4946813)
+        attempt = 0
 
-        try:
-            response = await self.fetcher.fetch(request_params)
-        except Exception as error:
-            incident = self.self_healing_engine.handle_error(
-                error,
-                data=request_params,
-                component="fetcher",
-            )
-            return PipelineRunResult(
-                location_id=location_id,
-                records_fetched=0,
-                records_valid=0,
-                records_inserted=0,
-                records_failed=0,
-                duration_seconds=perf_counter() - started_at,
-                documents=(),
-                incident=incident,
-                status="degraded",
-            )
+        while True:
+            try:
+                response = await self.fetcher.fetch(request_params)
+                break
+            except Exception as error:
+                incident = self.self_healing_engine.handle_error(
+                    error,
+                    data=request_params,
+                    component="fetcher",
+                    attempt=attempt,
+                )
+                if not self.self_healing_engine.should_retry(incident):
+                    return PipelineRunResult(
+                        location_id=location_id,
+                        records_fetched=0,
+                        records_valid=0,
+                        records_inserted=0,
+                        records_failed=0,
+                        duration_seconds=perf_counter() - started_at,
+                        documents=(),
+                        incident=incident,
+                        status="degraded",
+                        attempts=attempt + 1,
+                    )
+
+                delay = self.backoff_seconds * (2**attempt)
+                logger.warning(
+                    "Fetch failed ({}), retrying in {}s (attempt {}/{})",
+                    incident.error_type,
+                    delay,
+                    attempt + 1,
+                    incident.max_retries,
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
 
         fetched_count = len(response.get("results", []))
         measurements = self.validator.validate(response)
@@ -118,6 +148,8 @@ class Pipeline:
             records_failed=max(fetched_count - len(measurements), 0),
             duration_seconds=perf_counter() - started_at,
             documents=tuple(inserted_documents),
+            status="running",
+            attempts=attempt + 1,
         )
 
     @staticmethod

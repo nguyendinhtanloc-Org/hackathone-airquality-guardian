@@ -19,7 +19,6 @@ class DataFetcher:
     def __init__(self):
         self.base_url = "https://api.openaq.org/v3"
         self.api_key = os.getenv("OPENAQ_API_KEY")
-        self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
         self.timeout = 10
         # Cache để không fetch lại sensor info
         self._sensor_cache: dict = {}

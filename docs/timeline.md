@@ -278,8 +278,8 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
 
 | Ngày | NGƯỜI 1 — Runtime & Pipeline | NGƯỜI 2 — Data Platform & Observability |
 |------|---------------------------|--------------------------------------|
-| **20/10 (T4)** | 2.1 Nối `SelfHealingEngine` vào `Pipeline.run_once()`: lỗi → `handle_error()` → Incident | 2.11 `scripts/apply_datadog.py`: apply `config/datadog/dashboard.json` + `monitors.json` lên Datadog thật |
-| **21/10 (T5)** | 2.2 Retry loop + exponential backoff trong `DataFetcher.fetch()` (dùng `max_retries`, `RETRY_BACKOFF_SECONDS`) | 2.8 Nối `QuarantineManager` vào MongoDB: truyền `collection` thật, bỏ đường in-memory khỏi luồng chính |
+| **20/10 (T4)** | 2.1 Nối `SelfHealingEngine` vào `Pipeline.run_once()`: lỗi → `handle_error()` → Incident ✅ | 2.11 `scripts/apply_datadog.py`: apply `config/datadog/dashboard.json` + `monitors.json` lên Datadog thật |
+| **21/10 (T5)** | 2.2 Retry loop + exponential backoff trong `Pipeline.run_once()` (dùng `engine.should_retry()`, `RETRY_BACKOFF_SECONDS`) ✅ | 2.8 Nối `QuarantineManager` vào MongoDB: truyền `collection` thật, bỏ đường in-memory khỏi luồng chính |
 | **22/10 (T6)** | 2.3 Scheduler `run_loop()` chạy mỗi `FETCH_INTERVAL_SECONDS`, graceful shutdown (SIGTERM) | 2.9 `MongoDBClient`: thêm `query_pending_quarantine()`, `mark_quarantine_replayed()` |
 | **23/10 (T7)** | 2.4 Vòng đời `pipeline_status`: `running` → `degraded` / `stopped` | 2.10 `air_quality` thành **Time Series collection** trên Atlas + index tuning (`timeField`, `metaField`) |
 | **24/10 (T8)** | 2.5 Incident → Datadog log (`status=error`) + metric `pipeline.incidents.count` | 2.12 Monitor runtime: `create_monitor()` được gọi khi có incident, tag theo location, auto-resolve |
@@ -294,19 +294,26 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
 ### Chi tiết hạng mục Người 1 — Runtime & Pipeline
 
 ```
-2.1 Tích hợp Self-Healing vào Pipeline
-   File: src/pipeline.py
-   - Pipeline nhận SelfHealingEngine qua constructor
-   - run_once() bọc fetch trong try/except
-   - Lỗi → engine.handle_error() → trả Incident
-   - Verify: test fetch raise → incident được ghi, không crash
+2.1 Tích hợp Self-Healing vào Pipeline   ✅ XONG 23/10
+   Files: src/pipeline.py, src/fetcher/fetcher.py, src/main.py
+   - DataFetcher.fetch() ném exception phân loại thay vì trả None:
+     TimeoutError (timeout) / ConnectionError (5xx, lỗi mạng) / AirQualityFetchError (4xx)
+   - Pipeline nhận SelfHealingEngine qua constructor (default = SelfHealingEngine())
+   - run_once() bọc fetch trong try/except → engine.handle_error() → trả Incident
+   - PipelineRunResult thêm field: incident, status ("running" | "degraded")
+   - Verify: 7 test trong tests/unit/test_pipeline_self_healing.py
 
-2.2 Retry loop + exponential backoff
-   File: src/fetcher/fetcher.py
-   - Hiện có self.max_retries = int(os.getenv("MAX_RETRIES", "3")) nhưng KHÔNG dùng
-   - Thêm vòng lặp retry: 3 lần, backoff 30s → 60s → 120s
-   - Chỉ retry lỗi retryable (TimeoutError, ConnectionError)
-   - Verify: test timeout 2 lần rồi thành công → 1 lần gọi thêm
+2.2 Retry loop + exponential backoff   ✅ XONG 23/10
+   File: src/pipeline.py
+   - Vòng lặp retry đặt ở Pipeline (KHÔNG ở fetcher) để SelfHealingEngine
+     là nơi duy nhất quyết định "retry hay quarantine"
+   - engine.should_retry() kiểm tra attempt < max_retries (0-based)
+     → MAX_RETRIES=3 nghĩa là 4 lần gọi fetch (1 lần đầu + 3 lần retry)
+   - Backoff = RETRY_BACKOFF_SECONDS * 2^attempt → 30s → 60s → 120s
+   - main.py: SelfHealingEngine(max_retries=int(os.getenv("MAX_RETRIES", "3")))
+   - Xoá fetcher.max_retries (tránh 2 nơi cùng quyết định số lần retry)
+   - PipelineRunResult thêm field: attempts
+   - Verify: 9 test trong tests/unit/test_pipeline_retry.py
 
 2.3 Scheduler run_loop()
    File: src/main.py
@@ -354,17 +361,25 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
     - Verify: chạy script → dashboard + 3 monitor xuất hiện trên Datadog UI
 
 2.8 Nối QuarantineManager vào MongoDB
-    File: src/self_healing/quarantine.py
+    File: src/self_healing/quarantine.py + src/main.py
     - Hiện __init__(collection=None) mặc định in-memory, không ai truyền collection
-    - SelfHealingEngine tạo QuarantineManager(collection=database.quarantine_events)
+    - main.py: QuarantineManager(collection=database.quarantine_events)
+    - QuarantineManager là lớp SỞ HỮU schema (giữ expires_at, updated_at,
+      replay_attempts mà MongoDBClient.insert_quarantine() đang thiếu)
+    - insert_quarantine() trong MongoDBClient: sửa cho khớp, hoặc bỏ hẳn
+      nếu thừa (tránh 2 nơi ghi cùng 1 collection)
     - Giữ đường in-memory cho unit test
     - Verify: test với mock collection → insert_one được gọi
 
-2.9 API quarantine trong MongoDBClient
+2.9 API quarantine trong MongoDBClient   ⬜ CÓ THỂ KHÔNG CẦN
     File: src/database/mongodb.py
     - query_pending_quarantine(limit) → lấy record status="pending" cũ nhất
     - mark_quarantine_replayed(event_id) / mark_quarantine_failed(...)
-    - Verify: test upsert status đúng
+    - LƯU Ý: QuarantineManager._get_pending_records() đã tự query collection
+      và _update_record() đã tự update → CLI --replay (2.6) dùng
+      engine.replay_quarantined() là chạy được, KHÔNG cần 2.9.
+      Nếu làm 2.9 thì phải bảo đảm 2 API này và QuarantineManager cho
+      cùng kết quả (dễ trùng logic). Ưu tiên bỏ 2.9, dồn effort sang 2.10.
 
 2.10 air_quality thành Time Series collection
     Files: src/database/mongodb.py + script setup Atlas
@@ -397,12 +412,13 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
 ### Quan hệ phụ thuộc
 
 ```
-2.6 (Người 1)  ──cần──>  2.9 (Người 2)   API đọc/replay quarantine
+2.6 (Người 1)  ──KHÔNG cần──>  2.9 (Người 2)   QuarantineManager.replay() tự query collection
 2.1 (Người 1)  ──cần──>  2.8 (Người 2)   QuarantineManager ghi vào MongoDB
 2.10 (Người 2) ──cần──>  2.4 (Người 1)   pipeline_status cũng nên là Time Series
 ```
 
-Lịch đã sắp đúng thứ tự: 2.8/2.9 xong trước 22/10 → 2.6 làm ngày 25/10 không bị chặn.
+Lịch đã sắp đúng thứ tự: 2.8 xong trước 22/10 → 2.6 làm ngày 25/10 không bị chặn.
+2.9 không còn là nút thắt → Người 2 dồn effort sang 2.10 (Time Series) và 2.12.
 
 ### Điều kiện checkpoint
 

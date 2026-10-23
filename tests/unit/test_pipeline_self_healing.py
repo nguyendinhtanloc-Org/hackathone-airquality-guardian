@@ -1,12 +1,26 @@
 """Unit tests for the self-healing wiring inside the pipeline."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.pipeline import Pipeline
 from src.self_healing.engine import SelfHealingEngine
 from src.validation.validator import DataValidator
+
+
+@pytest.fixture(autouse=True)
+def no_sleep():
+    """Keep retry backoff from actually waiting during the tests."""
+    with patch("src.pipeline.asyncio.sleep", new=_instant_sleep()):
+        yield
+
+
+def _instant_sleep():
+    async def sleep(_seconds):
+        return None
+
+    return sleep
 
 
 @pytest.fixture
@@ -22,7 +36,13 @@ def engine():
 def build_pipeline(engine, database, fetch):
     fetcher = MagicMock()
     fetcher.fetch = fetch
-    return Pipeline(fetcher, DataValidator(), database, self_healing_engine=engine)
+    return Pipeline(
+        fetcher,
+        DataValidator(),
+        database,
+        self_healing_engine=engine,
+        backoff_seconds=0,
+    )
 
 
 @pytest.mark.asyncio
@@ -58,14 +78,19 @@ async def test_pipeline_does_not_raise_on_fetch_failure(engine, database):
 
 
 @pytest.mark.asyncio
-async def test_retryable_fetch_failure_is_not_quarantined(engine, database):
+async def test_transient_fetch_failure_is_quarantined_after_retries_exhausted(
+    engine, database
+):
     pipeline = build_pipeline(
         engine, database, _raising(TimeoutError("timed out"))
     )
 
     await pipeline.run_once()
 
-    assert engine.quarantine_manager._memory_store == {}
+    quarantined = list(engine.quarantine_manager._memory_store.values())
+    assert len(quarantined) == 1
+    assert quarantined[0]["status"] == "pending"
+    assert engine.incidents[-1].retryable is True
 
 
 @pytest.mark.asyncio
@@ -122,7 +147,9 @@ async def test_pipeline_uses_default_engine_when_none_given(database):
     fetcher = MagicMock()
     fetcher.fetch = _raising(ValueError("bad response shape"))
 
-    pipeline = Pipeline(fetcher, DataValidator(), database)
+    pipeline = Pipeline(
+        fetcher, DataValidator(), database, backoff_seconds=0
+    )
 
     result = await pipeline.run_once()
 

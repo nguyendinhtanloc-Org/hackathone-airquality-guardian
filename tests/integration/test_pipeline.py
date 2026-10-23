@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -7,6 +7,20 @@ from src.fetcher.fetcher import DataFetcher
 from src.pipeline import Pipeline
 from src.self_healing.engine import SelfHealingEngine
 from src.validation.validator import DataValidator
+
+
+@pytest.fixture(autouse=True)
+def no_sleep():
+    """Keep retry backoff from actually waiting during the tests."""
+    with patch("src.pipeline.asyncio.sleep", new=_instant_sleep()):
+        yield
+
+
+def _instant_sleep():
+    async def sleep(_seconds):
+        return None
+
+    return sleep
 
 
 class MockOpenAQClient:

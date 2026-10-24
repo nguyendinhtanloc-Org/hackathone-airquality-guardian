@@ -1,7 +1,7 @@
 """MongoDB persistence for air-quality, quarantine, and pipeline records."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -18,6 +18,9 @@ class MongoDBClient:
     QUARANTINE_COLLECTION = "quarantine_events"
     PIPELINE_STATUS_COLLECTION = "pipeline_status"
     PIPELINE_STATUSES = {"running", "degraded", "stopped"}
+    QUARANTINE_RETENTION_DAYS = int(
+        os.getenv("QUARANTINE_RETENTION_DAYS", "7")
+    )
 
     def __init__(
         self,
@@ -74,16 +77,32 @@ class MongoDBClient:
         error_message: str,
         event_id: str | None = None,
     ) -> Any:
-        """Store a failed record for later inspection or replay."""
+        """Store a failed record for later inspection or replay.
+
+        The record carries both the legacy fields and the fields
+        ``QuarantineManager`` reads (quarantine_id, data, status,
+        expires_at, replay_attempts) so a record written here can be
+        replayed by ``python -m src.main --replay`` without any
+        conversion step.
+        """
+        now = datetime.now(timezone.utc)
         record = {
             "event_id": event_id or str(uuid4()),
             "raw_data": dict(raw_data),
             "error_type": error_type,
             "error_message": error_message,
             "retry_count": 0,
-            "created_at": datetime.now(timezone.utc),
+            "created_at": now,
             "status": "pending",
             "resolved_at": None,
+            # Fields owned by QuarantineManager.
+            "quarantine_id": str(uuid4()),
+            "data": dict(raw_data),
+            "error": error_message,
+            "metadata": {"error_type": error_type},
+            "updated_at": now,
+            "replay_attempts": 0,
+            "expires_at": now + timedelta(days=self.QUARANTINE_RETENTION_DAYS),
         }
         result = self.quarantine_events.insert_one(record)
         return result.inserted_id

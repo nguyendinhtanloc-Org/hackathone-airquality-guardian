@@ -72,6 +72,7 @@ class Pipeline:
         request_params = params or {}
         location_id = request_params.get("location_id", 4946813)
         attempt = 0
+        self.self_healing_engine.reset_incidents()
 
         while True:
             try:
@@ -110,45 +111,80 @@ class Pipeline:
                 attempt += 1
 
         fetched_count = len(response.get("results", []))
-        measurements = self.validator.validate(response)
         inserted_documents: list[dict[str, Any]] = []
-        for measurement in measurements:
-            timestamp = self._parse_timestamp(measurement.last_updated)
-            aqi_value = self.aqi_calculator.calculate(
-                measurement.parameter,
-                measurement.value,
-            )
-            aqi_data: dict[str, Any] = {}
-            if aqi_value is not None:
-                level = self.aqi_calculator.get_level(aqi_value)
-                aqi_data = {
-                    f"{measurement.parameter}_aqi": aqi_value,
-                    "primary_pollutant": measurement.parameter,
-                    **level,
-                }
+        try:
+            measurements = self.validator.validate(response)
+            for measurement in measurements:
+                timestamp = self._parse_timestamp(measurement.last_updated)
+                aqi_value = self.aqi_calculator.calculate(
+                    measurement.parameter,
+                    measurement.value,
+                )
+                aqi_data: dict[str, Any] = {}
+                if aqi_value is not None:
+                    level = self.aqi_calculator.get_level(aqi_value)
+                    aqi_data = {
+                        f"{measurement.parameter}_aqi": aqi_value,
+                        "primary_pollutant": measurement.parameter,
+                        **level,
+                    }
 
-            document = {
-                "event_id": str(uuid4()),
-                "metadata": {"location_id": location_id},
-                "timestamp": timestamp,
-                "measurements": {
-                    measurement.parameter: measurement.value,
-                    f"{measurement.parameter}_unit": measurement.unit,
-                },
-                "aqi": aqi_data,
-            }
-            self.database.insert_air_quality(document)
-            inserted_documents.append(document)
+                document = {
+                    "event_id": str(uuid4()),
+                    "metadata": {"location_id": location_id},
+                    "timestamp": timestamp,
+                    "measurements": {
+                        measurement.parameter: measurement.value,
+                        f"{measurement.parameter}_unit": measurement.unit,
+                    },
+                    "aqi": aqi_data,
+                }
+                self.database.insert_air_quality(document)
+                inserted_documents.append(document)
+        except Exception as error:
+            incident = self.self_healing_engine.handle_error(
+                error,
+                data=request_params,
+                component="database",
+                attempt=attempt,
+            )
+            logger.error(
+                "Persistence failed after {} insert(s): {}",
+                len(inserted_documents),
+                incident.error,
+            )
+            return PipelineRunResult(
+                location_id=location_id,
+                records_fetched=fetched_count,
+                records_valid=0,
+                records_inserted=0,
+                records_failed=fetched_count,
+                duration_seconds=perf_counter() - started_at,
+                documents=(),
+                incident=incident,
+                status="degraded",
+                attempts=attempt + 1,
+            )
+
+        records_valid = len(measurements)
+        records_inserted = len(inserted_documents)
+        # Degraded means "we got data but could not store it" — the scheduler
+        # and alerting need to see that. An empty response is not an error:
+        # the location simply had no measurements this cycle.
+        if fetched_count > 0 and records_inserted == 0:
+            status = "degraded"
+        else:
+            status = "running"
 
         return PipelineRunResult(
             location_id=location_id,
             records_fetched=fetched_count,
-            records_valid=len(measurements),
-            records_inserted=len(inserted_documents),
-            records_failed=max(fetched_count - len(measurements), 0),
+            records_valid=records_valid,
+            records_inserted=records_inserted,
+            records_failed=max(fetched_count - records_valid, 0),
             duration_seconds=perf_counter() - started_at,
             documents=tuple(inserted_documents),
-            status="running",
+            status=status,
             attempts=attempt + 1,
         )
 

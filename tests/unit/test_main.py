@@ -31,7 +31,7 @@ async def test_main_prints_run_summary_and_sends_datadog_telemetry(
     monkeypatch.setattr(pipeline_main, "DataFetcher", lambda: fetcher)
     monkeypatch.setattr(pipeline_main, "DatadogIntegrator", lambda: datadog)
 
-    await pipeline_main.main()
+    await pipeline_main.main([])
 
     database.insert_air_quality.assert_called_once()
     document = database.insert_air_quality.call_args.args[0]

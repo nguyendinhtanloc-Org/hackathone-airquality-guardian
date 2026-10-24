@@ -134,9 +134,17 @@ async def test_pipeline_rejects_measurement_without_timestamp():
         ]
     }
     database = MagicMock(spec=MongoDBClient)
-    pipeline = Pipeline(fetcher, DataValidator(), database)
+    pipeline = Pipeline(
+        fetcher, DataValidator(), database, backoff_seconds=0
+    )
 
-    with pytest.raises(ValueError, match="timestamp is required"):
-        await pipeline.run_once()
+    # A bad timestamp degrades the run instead of crashing the caller:
+    # nothing is stored and the incident is surfaced on the result.
+    result = await pipeline.run_once()
 
+    assert result.status == "degraded"
+    assert result.records_fetched == 1
+    assert result.records_inserted == 0
+    assert result.incident is not None
+    assert result.incident.component == "database"
     database.insert_air_quality.assert_not_called()

@@ -1,3 +1,4 @@
+import inspect
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Callable
 from uuid import uuid4
@@ -38,22 +39,71 @@ class QuarantineManager:
     def replay(self, processor: Callable[[Any], Any], limit: int = 100) -> dict[str, int]:
         if limit < 1:
             raise ValueError("Limit must be a positive integer.")
-        records = self._get_pending_records(limit)
         result = {"processed": 0, "succeeded": 0, "failed": 0}
-        for record in records:
-            record_id = record["quarantine_id"]
+        for record_id, data in self._pending_for_replay(limit):
             result["processed"] += 1
-            attempts = record.get("replay_attempts", 0) + 1
-            self._update_record(record_id, replay_attempts=attempts, update_at=_utcnow())
             try:
-                processor(record["data"])
+                processor(data)
             except Exception as exc:
-                self._update_record(record_id, status="pending", last_replay_error=str(exc), update_at=_utcnow())
+                self._mark_replay_failed(record_id, exc)
                 result["failed"] += 1
             else:
-                self._update_record(record_id, status="replayed", replayed_at=_utcnow(), update_at=_utcnow())
+                self._mark_replayed(record_id)
                 result["succeeded"] += 1
         return result
+
+    async def replay_async(
+        self,
+        processor: Callable[[Any], Any],
+        limit: int = 100,
+    ) -> dict[str, int]:
+        """Replay quarantined records through an async processor."""
+        if limit < 1:
+            raise ValueError("Limit must be a positive integer.")
+        result = {"processed": 0, "succeeded": 0, "failed": 0}
+        for record_id, data in self._pending_for_replay(limit):
+            result["processed"] += 1
+            try:
+                outcome = processor(data)
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except Exception as exc:
+                self._mark_replay_failed(record_id, exc)
+                result["failed"] += 1
+            else:
+                self._mark_replayed(record_id)
+                result["succeeded"] += 1
+        return result
+
+    def _pending_for_replay(self, limit: int) -> list[tuple[str, Any]]:
+        """Claim pending records for replay, oldest first."""
+        claimed: list[tuple[str, Any]] = []
+        for record in self._get_pending_records(limit):
+            record_id = record["quarantine_id"]
+            attempts = record.get("replay_attempts", 0) + 1
+            self._update_record(
+                record_id,
+                replay_attempts=attempts,
+                update_at=_utcnow(),
+            )
+            claimed.append((record_id, record["data"]))
+        return claimed
+
+    def _mark_replayed(self, record_id: str) -> None:
+        self._update_record(
+            record_id,
+            status="replayed",
+            replayed_at=_utcnow(),
+            update_at=_utcnow(),
+        )
+
+    def _mark_replay_failed(self, record_id: str, error: Exception) -> None:
+        self._update_record(
+            record_id,
+            status="pending",
+            last_replay_error=str(error),
+            update_at=_utcnow(),
+        )
     
     # Xoa cac ban ghi da het han trong uarantine. Tra ve so luong ban ghi da xoa.
     def cleanup(self) -> int:

@@ -402,20 +402,29 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
     - ✅ Giữ đường in-memory cho unit test
     - Verify: test với mock collection → insert_one được gọi
 
-2.9 API quarantine trong MongoDBClient   ⬜ CÓ THỂ KHÔNG CẦN
+2.9 API quarantine trong MongoDBClient   ✅ XONG 25/10 (Người 2, PR #4)
     File: src/database/mongodb.py
     - query_pending_quarantine(limit) → lấy record status="pending" cũ nhất
     - mark_quarantine_replayed(event_id) / mark_quarantine_failed(...)
+    - Index composite (status, created_at) cho collection quarantine
     - LƯU Ý: QuarantineManager._get_pending_records() đã tự query collection
       và _update_record() đã tự update → CLI --replay (2.6) dùng
-      engine.replay_quarantined() là chạy được, KHÔNG cần 2.9.
-      Nếu làm 2.9 thì phải bảo đảm 2 API này và QuarantineManager cho
-      cùng kết quả (dễ trùng logic). Ưu tiên bỏ 2.9, dồn effort sang 2.10.
+      engine.replay_quarantined() là chạy được.
+      → ĐÃ CÓ 2 HỆ API CÙNG VIẾT collection quarantine_events:
+        (a) QuarantineManager: sở hữu schema, dùng cho ghi + replay
+        (b) MongoDBClient.query_pending_quarantine/mark_*: dùng để inspect
+      QUY ẾC: giữ (a) là nguồn ghi chính. (b) chỉ để query/inspect,
+      KHÔNG dùng mark_* để replay (tránh 2 nơi cùng đổi status → lệch).
 
-2.10 air_quality thành Time Series collection
+2.10 air_quality thành Time Series collection   🟡 ĐÃ TẠO FILE, CHƯA LÀM
     Files: src/database/mongodb.py + script setup Atlas
     - timeField="timestamp", metaField="metadata.location_id"
     - Index tuning cho query theo location + time range
+    - HIỆN TẠI: scripts/setup_timeseries.py tồn tại nhưng TRỐNG (0 dòng).
+      _create_indexes() vẫn tạo index thường, chưa có index Time Series.
+    - CẦN LÀM: viết script setup_timeseries.py (create collection với
+      timeseries options), thêm index timeField + metaField, verify
+      collection type = timeSeries trên Atlas UI.
     - Verify: collection type = timeSeries trên Atlas UI
 
 2.12 Monitor runtime

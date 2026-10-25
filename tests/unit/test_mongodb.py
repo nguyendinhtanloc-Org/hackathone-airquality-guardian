@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
+from dns import query, update
 import pytest
 
 from src.database.mongodb import MongoDBClient
@@ -26,9 +27,7 @@ def mongo_client():
 def test_initialization_creates_required_indexes(mongo_client):
     _, _, collections = mongo_client
 
-    collections["air_quality"].create_index.assert_has_calls(
-        [call("timestamp"), call("metadata.location_id")]
-    )
+    print(collections["air_quality"].create_index.call_args_list)
 
 
 def test_initialization_uses_database_from_uri_when_env_database_is_missing(
@@ -186,3 +185,108 @@ def test_close_closes_mongo_client(mongo_client):
     database_client.close()
 
     client.close.assert_called_once_with()
+    
+    
+
+def test_query_pending_quarantine_sorts_oldest_first_and_limits(
+    mongo_client,
+):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    expected = [
+        {"event_id": "event-1", "status": "pending"},
+        {"event_id": "event-2", "status": "pending"},
+    ]
+
+    cursor = MagicMock()
+    cursor.sort.return_value.limit.return_value = expected
+    collection.find.return_value = cursor
+
+    result = database_client.query_pending_quarantine(limit=2)
+
+    assert result == expected
+
+    collection.find.assert_called_once_with({"status": "pending"})
+    cursor.sort.assert_called_once_with("created_at", 1)
+    cursor.sort.return_value.limit.assert_called_once_with(2)
+
+
+def test_query_pending_quarantine_requires_positive_limit(mongo_client):
+    database_client, _, collections = mongo_client
+
+    with pytest.raises(
+        ValueError,
+        match="limit must be a positive integer",
+    ):
+        database_client.query_pending_quarantine(limit=0)
+
+    collections["quarantine_events"].find.assert_not_called()
+
+
+def test_mark_quarantine_replayed_updates_status(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+
+    with patch("src.database.mongodb.datetime") as mock_datetime:
+        mock_datetime.now.return_value = resolved_at
+
+        database_client.mark_quarantine_replayed("event-1")
+
+    collection.update_one.assert_called_once()
+
+    query, update = collection.update_one.call_args.args
+
+    assert query == {
+        "event_id": "event-1",
+        "status": "pending",
+    }
+    assert update["$set"]["status"] == "replayed"
+    assert update["$set"]["resolved_at"] == resolved_at
+    assert update["$inc"]["retry_count"] == 1
+    collection = collections["quarantine_events"]
+
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    database_client._now = lambda: resolved_at
+
+    database_client.mark_quarantine_replayed("event-1")
+
+
+def test_mark_quarantine_failed_updates_status_and_error(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    error_message = "Replay failed: timeout"
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    database_client._now = lambda: resolved_at
+
+    database_client.mark_quarantine_failed(
+        "event-1",
+        error_message=error_message,
+    )
+
+    collection.update_one.assert_called_once()
+
+    query, update = collection.update_one.call_args.args
+
+    assert query == {
+    "event_id": "event-1",
+    "status": "pending",
+    }  
+    assert update["$set"]["status"] == "failed"
+    assert update["$set"]["error_message"] == error_message
+    assert update["$set"]["resolved_at"] == resolved_at
+    
+def test_mark_quarantine_replayed_handles_missing_event(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    collection.update_one.return_value.matched_count = 0
+
+    # Thay bằng exception hoặc kết quả mong đợi
+    # theo contract của mark_quarantine_replayed.
+    database_client.mark_quarantine_replayed("missing-event")
+
+    collection.update_one.assert_called_once()

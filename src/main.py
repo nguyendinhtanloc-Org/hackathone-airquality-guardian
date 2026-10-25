@@ -119,6 +119,9 @@ async def main(argv: Sequence[str] | None = None) -> None:
     logger.info("Starting AirQuality Guardian Pipeline")
 
     database = MongoDBClient()
+    logger.info("MongoDB database: {}", database.database.name)
+    logger.info("MongoDB collection: {}", database.air_quality.name)
+    logger.info("MongoDB ping: {}", database.client.admin.command("ping"))
     datadog = (
         DatadogIntegrator()
         if os.getenv("DATADOG_API_KEY")

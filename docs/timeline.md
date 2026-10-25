@@ -9,8 +9,8 @@
 ## Tổng quan timeline
 
 ```
-GIAI ĐOẠN 1: CHUẨN BỊ         │ 17 ngày
-GIAI ĐOẠN 2: BUILD            │ 15 ngày (17-31/10)
+GIAI ĐOẠN 1: CHUẨN BỊ         │ 17 ngày   ✅ XONG — cả 2 người, 50/50 tests pass
+GIAI ĐOẠN 2: BUILD            │ 12 ngày (20-31/10)  🔄 ĐANG LÀM
 GIAI ĐOẠN 3: NỘP BÀI          │ 1 ngày (31/10)
 GIAI ĐOẠN 4: CHỜ KẾT QUẢ      │ 8 ngày (01-08/11)
 ```
@@ -237,11 +237,208 @@ NGÀY 5 (Trước 17/10)
 
 ---
 
-## GIAI ĐOẠN 2: BUILD (17-31/10)
+## GIAI ĐOẠN 2: BUILD (20-31/10) — MVP chạy thật + demo
 
-> **Mục tiêu:** MVP chạy được, deploy lên cloud, quay video demo
+> **Mục tiêu chung:** Hệ thống chạy end-to-end với MongoDB Atlas + Datadog thật, tự phục hồi khi lỗi, và có video demo.
+> **Cách chia:** Mỗi người giữ một "nhánh sở hữu" — code của người này không bị người kia sửa mà không hỏi.
 
-### Tuần 1: 17-24/10
+**Trạng thái hiện tại:**
+
+```
+GIAI ĐOẠN 1: CHUẨN BỊ    │ ✅ XONG (cả 2 người) — 50/50 tests pass
+GIAI ĐOẠN 2: BUILD         │ 🔄 ĐANG LÀM — bắt đầu 20/10
+GIAI ĐOẠN 3: NỘP BÀI       │ ○ 31/10
+GIAI ĐOẠN 4: CHỜ KẾT QUẢ   │ ○ 01-08/11
+```
+
+### Khoảng trống Giai đoạn 2 (đã rà code sau khi merge)
+
+Giai đoạn 1 đã có đủ code skeleton. Giai đoạn 2 **không phải viết mới** — mà là nối các mảnh đã có lại với nhau và chạy thật. 9 mục sau là code đã tồn tại nhưng chưa ai gọi:
+
+| # | Khoảng trống | Hiện trạng |
+|---|-------------|-----------|
+| 1 | `SelfHealingEngine` không được gọi ở đâu | Class đầy đủ, 0 call site |
+| 2 | `QuarantineManager` không lưu vào MongoDB | `__init__(collection=None)` — không ai truyền collection, chạy in-memory |
+| 3 | `MongoDBClient.insert_quarantine()` không ai gọi | Method có, 0 call site |
+| 4 | `MongoDBClient.update_pipeline_status()` không ai gọi | Method có, 0 call site |
+| 5 | `query_air_quality()` / `aggregate_aqi()` không ai gọi | Method có, 0 call site |
+| 6 | `DataFetcher.max_retries` đọc từ env nhưng không dùng | Dead config |
+| 7 | `main.py` chạy **một lần rồi thoát** — không có scheduler | Giai đoạn 1 plan có `run_loop()`, giờ không có |
+| 8 | `create_monitor()` không ai gọi | `monitors.json` là template tĩnh, chưa apply lên Datadog thật |
+| 9 | `air_quality` chưa phải Time Series collection | Giai đoạn 1 plan nói là Time Series |
+
+### Nguyên tắc chia: cả hai đều code, chia theo module
+
+```
+NGƯỜI 1: 7 hạng mục code — Runtime & Pipeline
+NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
+```
+
+### Bảng phân công
+
+| Ngày | NGƯỜI 1 — Runtime & Pipeline | NGƯỜI 2 — Data Platform & Observability |
+|------|---------------------------|--------------------------------------|
+| **20/10 (T4)** | 2.1 Nối `SelfHealingEngine` vào `Pipeline.run_once()`: lỗi → `handle_error()` → Incident | 2.11 `scripts/apply_datadog.py`: apply `config/datadog/dashboard.json` + `monitors.json` lên Datadog thật |
+| **21/10 (T5)** | 2.2 Retry loop + exponential backoff trong `DataFetcher.fetch()` (dùng `max_retries`, `RETRY_BACKOFF_SECONDS`) | 2.8 Nối `QuarantineManager` vào MongoDB: truyền `collection` thật, bỏ đường in-memory khỏi luồng chính |
+| **22/10 (T6)** | 2.3 Scheduler `run_loop()` chạy mỗi `FETCH_INTERVAL_SECONDS`, graceful shutdown (SIGTERM) | 2.9 `MongoDBClient`: thêm `query_pending_quarantine()`, `mark_quarantine_replayed()` |
+| **23/10 (T7)** | 2.4 Vòng đời `pipeline_status`: `running` → `degraded` / `stopped` | 2.10 `air_quality` thành **Time Series collection** trên Atlas + index tuning (`timeField`, `metaField`) |
+| **24/10 (T8)** | 2.5 Incident → Datadog log (`status=error`) + metric `pipeline.incidents.count` | 2.12 Monitor runtime: `create_monitor()` được gọi khi có incident, tag theo location, auto-resolve |
+| **25/10 (CN)** | 2.6 CLI `python -m src.main --replay` (dùng API của 2.9) | 2.13 CLI `python -m src.main --report`: dùng `aggregate_aqi()` + `query_air_quality()` xuất báo cáo AQI theo location |
+| **26/10 (T2)** | 2.7 E2E test + CI/CD + deploy cloud | 2.14 Docs: `DATADOG.md`, `DATA_MODEL.md`, `SELF_HEALING.md` (viết sau khi code xong) |
+| **27/10 (T3)** | Verify trên cloud: data chảy vào Atlas, dashboard update | Setup Datadog thật + screenshot + slide |
+| **28/10 (T4)** | Test cảnh báo thật: AQI cao → monitor trigger → Slack | Kịch bản + dựng slide, tập trình luyện 1 lần |
+| **29/10 (T5)** | Test recovery: tắt network → retry → quarantine → bật lại → replay | Quay video demo (OBS Studio, màn hình cloud + webcam) |
+| **30/10 (T6)** | Review toàn bộ code, đọc lại README, kiểm tra docs khớp code | Review docs, rà slide lần cuối |
+| **31/10 (T7)** | **NỘP BÀI 23:59 ICT** | **NỘP BÀI 23:59 ICT** |
+
+### Chi tiết hạng mục Người 1 — Runtime & Pipeline
+
+```
+2.1 Tích hợp Self-Healing vào Pipeline
+   File: src/pipeline.py
+   - Pipeline nhận SelfHealingEngine qua constructor
+   - run_once() bọc fetch trong try/except
+   - Lỗi → engine.handle_error() → trả Incident
+   - Verify: test fetch raise → incident được ghi, không crash
+
+2.2 Retry loop + exponential backoff
+   File: src/fetcher/fetcher.py
+   - Hiện có self.max_retries = int(os.getenv("MAX_RETRIES", "3")) nhưng KHÔNG dùng
+   - Thêm vòng lặp retry: 3 lần, backoff 30s → 60s → 120s
+   - Chỉ retry lỗi retryable (TimeoutError, ConnectionError)
+   - Verify: test timeout 2 lần rồi thành công → 1 lần gọi thêm
+
+2.3 Scheduler run_loop()
+   File: src/main.py
+   - Chạy pipeline mỗi FETCH_INTERVAL_SECONDS (mặc định 300)
+   - Graceful shutdown: bắt SIGTERM/SIGINT → dừng sau khi vòng hiện tại xong
+   - Verify: test giả lập 2 vòng rồi stop → đúng 2 lần chạy
+
+2.4 Vòng đời pipeline_status
+   File: src/pipeline.py
+   - Đầu run: update_pipeline_status("running", ...)
+   - Thành công: status="running", metrics={...}
+   - Có incident chưa replay được: status="degraded"
+   - Dừng do lỗi: status="stopped"
+   - Verify: test upsert đúng status/metrics
+
+2.5 Incident lên Datadog
+   File: src/main.py
+   - Gửi log status="error" cho mỗi incident
+   - Thêm metric pipeline.records.failed, pipeline.incidents.count
+   - Verify: test main() với fetcher fail → datadog.send_logs được gọi
+
+2.6 CLI --replay
+   File: src/main.py (argparse)
+   - python -m src.main --replay
+   - Đọc quarantine_events status="pending" → chạy lại pipeline → đánh dấu "replayed"
+   - Verify: test replay đưa 1 record từ pending → replayed
+
+2.7 E2E test + CI/CD + deploy
+   Files: tests/integration/, .github/workflows/, Dockerfile
+   - Kịch bản 1: fetch OK → insert Atlas
+   - Kịch bản 2: fetch fail 3 lần → quarantine 1 record → status degraded
+   - Kịch bản 3: replay → insert thành công → status running
+   - Deploy: chọn 1 trong AWS ECS / GCP Cloud Run / Azure Container Apps (free tier)
+   - Verify: pytest pass + pipeline chạy được trên cloud
+```
+
+### Chi tiết hạng mục Người 2 — Data Platform & Observability
+
+```
+2.11 Script apply Datadog
+    File: scripts/apply_datadog.py
+    - Đọc config/datadog/dashboard.json → POST /api/v1/dashboard
+    - Đọc config/datadog/monitors.json → POST /api/v1/monitor cho từng cái
+    - Cần DATADOG_API_KEY + DATADOG_APP_KEY
+    - Verify: chạy script → dashboard + 3 monitor xuất hiện trên Datadog UI
+
+2.8 Nối QuarantineManager vào MongoDB
+    File: src/self_healing/quarantine.py
+    - Hiện __init__(collection=None) mặc định in-memory, không ai truyền collection
+    - SelfHealingEngine tạo QuarantineManager(collection=database.quarantine_events)
+    - Giữ đường in-memory cho unit test
+    - Verify: test với mock collection → insert_one được gọi
+
+2.9 API quarantine trong MongoDBClient
+    File: src/database/mongodb.py
+    - query_pending_quarantine(limit) → lấy record status="pending" cũ nhất
+    - mark_quarantine_replayed(event_id) / mark_quarantine_failed(...)
+    - Verify: test upsert status đúng
+
+2.10 air_quality thành Time Series collection
+    Files: src/database/mongodb.py + script setup Atlas
+    - timeField="timestamp", metaField="metadata.location_id"
+    - Index tuning cho query theo location + time range
+    - Verify: collection type = timeSeries trên Atlas UI
+
+2.12 Monitor runtime
+    File: src/datadog/integrator.py
+    - create_monitor() được gọi khi có incident (hiện chưa ai gọi)
+    - Tag theo location_id, severity theo loại lỗi
+    - Auto-resolve khi pipeline healthy lại
+    - Verify: test create_monitor được gọi khi incident xảy ra
+
+2.13 CLI --report
+    File: src/main.py (argparse) hoặc src/cli/report.py
+    - python -m src.main --report
+    - Dùng aggregate_aqi() + query_air_quality() → báo cáo AQI theo location
+    - Verify: test trả về summary đúng shape
+
+2.14 Docs (3 file)
+    Files: docs/DATADOG.md, docs/DATA_MODEL.md, docs/SELF_HEALING.md
+    - Viết SAU khi code xong để nội dung khớp thực tế
+    - DATADOG.md: 4 widget, 3 monitor, ảnh chụp thật
+    - DATA_MODEL.md: schema 3 collection, indexes, truy vấn mẫu
+    - SELF_HEALING.md: sơ đồ retry → quarantine → replay, bảng lỗi retryable,
+      config, hướng dẫn demo lỗi cho video
+```
+
+### Quan hệ phụ thuộc
+
+```
+2.6 (Người 1)  ──cần──>  2.9 (Người 2)   API đọc/replay quarantine
+2.1 (Người 1)  ──cần──>  2.8 (Người 2)   QuarantineManager ghi vào MongoDB
+2.10 (Người 2) ──cần──>  2.4 (Người 1)   pipeline_status cũng nên là Time Series
+```
+
+Lịch đã sắp đúng thứ tự: 2.8/2.9 xong trước 22/10 → 2.6 làm ngày 25/10 không bị chặn.
+
+### Điều kiện checkpoint
+
+| Ngày | Checkpoint | Nếu chưa đạt |
+|------|-----------|--------------|
+| 25/10 | Data chảy vào Atlas + Datadog dashboard có số liệu + `--replay` chạy được | Dùng buffer 26/10, cắt 2.14 docs chi tiết |
+| 28/10 | Deploy cloud chạy được | Dùng video demo thay deploy live (thể lệ cho phép "bản demo có thể truy cập") |
+| 29/10 | Quay xong video 10 phút | Rút còn 7 phút, bỏ phần AQI alert |
+| 30/10 | Slide xong, code review xong | Cắt docs/DATA_MODEL.md chi tiết, giữ bản rút gọn |
+
+### Nguyên tắc phối hợp
+
+```
+NHÁNH:
+  Người 1: data-pipeline     (sở hữu src/fetcher, src/validation, src/aqi, src/models, src/pipeline.py)
+  Người 2: self-healing-ops  (sở hữu src/self_healing, src/database, src/datadog, config/, scripts/, docs/)
+
+GIAO DIỆN GIỮA HAI BÊN (đã chốt, không đổi):
+  - Pipeline(fetcher, validator, database, aqi_calculator) + SelfHealingEngine
+  - MongoDBClient.insert_air_quality(document) — document có event_id, metadata.location_id,
+    timestamp (datetime UTC), measurements, aqi
+  - DatadogIntegrator.send_metrics(dict) / send_logs(dict) / create_monitor(dict)
+  - Tên metric cố định: pipeline.records.fetched, pipeline.records.valid,
+    pipeline.records.inserted, pipeline.records.failed, pipeline.fetch.latency,
+    datavalue.aqi.current, pipeline.incidents.count
+
+QUY TẮC:
+  - Muốn đổi interface → báo trong chat trước, không tự đổi
+  - Sửa file của người kia → nhắn trước
+  - Merge vào develop mỗi tối, không merge thẳng vào main
+  - Test phải pass (pytest tests/) trước khi push
+```
+
+---
+
+## Timeline gốc của Giai đoạn 2 (tham khảo)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

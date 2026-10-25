@@ -57,16 +57,20 @@ class MongoDBClient:
             self.PIPELINE_STATUS_COLLECTION
         ]
         self._create_indexes()
-
+    def _now(self) -> datetime:
+        """Return the current UTC time."""
+        return datetime.now(timezone.utc)
     def _create_indexes(self) -> None:
-        self.air_quality.create_index("timestamp")
-        self.air_quality.create_index("metadata.location_id")
-
+        self.quarantine_events.create_index(
+            [("status", 1), ("created_at", 1)],
+            name="pending_quarantine_idx",
+    )
+#đưa dữ liệu vào db, trả về id của bản ghi vừa được thêm vào, collection: air uality
     def insert_air_quality(self, document: Mapping[str, Any]) -> Any:
         """Insert one air-quality document and return its inserted ID."""
         result = self.air_quality.insert_one(dict(document))
         return result.inserted_id
-
+#đưa dữ liệu vào db, trả về id của bản ghi vừa được thêm vào, collection: quarantine
     def insert_quarantine(
         self,
         raw_data: Mapping[str, Any],
@@ -87,7 +91,7 @@ class MongoDBClient:
         }
         result = self.quarantine_events.insert_one(record)
         return result.inserted_id
-
+#lưu trạng thái running PIPELINE_STATUSES
     def update_pipeline_status(
         self,
         status: str,
@@ -195,6 +199,59 @@ class MongoDBClient:
             ]
         )
         return list(self.air_quality.aggregate(pipeline))
+
+    
+    def query_pending_quarantine(
+        self, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return oldest pending quarantine events first."""
+        if limit < 1:
+            raise ValueError("limit must be a positive integer.")
+
+        cursor = (
+            self.quarantine_events
+            .find({"status": "pending"})
+            .sort("created_at", 1)
+            .limit(limit)
+        )
+        return list(cursor)
+
+
+    def mark_quarantine_replayed(
+        self, event_id: str
+    ) -> bool:
+        """Mark a successfully replayed event."""
+        result = self.quarantine_events.update_one(
+            {"event_id": event_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": "replayed",
+                    "resolved_at": self._now(),
+                },
+                "$inc": {"retry_count": 1},
+            },
+            
+        )
+        return result.modified_count == 1
+
+
+    
+    def mark_quarantine_failed(
+        self, event_id: str, error_message: str
+    ) -> bool:
+        """Record a replay failure and retain the event for inspection."""
+        result = self.quarantine_events.update_one(
+            {"event_id": event_id, "status": "pending"},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error_message": error_message,
+                    "resolved_at": self._now(),
+                },
+                "$inc": {"retry_count": 1},
+            },
+        )
+        return result.modified_count == 1
 
     def close(self) -> None:
         """Close the underlying MongoDB client."""

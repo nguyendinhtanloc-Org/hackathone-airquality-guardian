@@ -5,10 +5,11 @@ AirQuality Guardian - Main Entry Point
 import argparse
 import asyncio
 import os
+import signal
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 
-import httpx
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -17,7 +18,7 @@ from src.validation.validator import DataValidator
 from src.aqi.calculator import AQICalculator
 from src.database.mongodb import MongoDBClient
 from src.datadog.integrator import DatadogIntegrator
-from src.pipeline import Pipeline
+from src.pipeline import Pipeline, PipelineRunResult
 from src.self_healing.engine import SelfHealingEngine
 from src.self_healing.quarantine import QuarantineManager
 
@@ -55,6 +56,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_LOCATION_ID,
         help="Location id to fetch measurements for.",
+    )
+    parser.add_argument(
+        "--loop",
+        action="store_true",
+        help=(
+            "Run continuously: one cycle every FETCH_INTERVAL_SECONDS "
+            "(default 300) until stopped with SIGTERM/SIGINT. "
+            "For deployment; a single run is the default."
+        ),
     )
     return parser.parse_args(
         list(argv) if argv is not None else sys.argv[1:]
@@ -114,6 +124,223 @@ async def replay_quarantined(
     return summary
 
 
+async def run_cycle(
+    database: MongoDBClient,
+    datadog: DatadogIntegrator | None,
+    pipeline: Pipeline,
+    location_id: int,
+) -> PipelineRunResult:
+    """Run one fetch → validate → persist → observe cycle.
+
+    Used by both single-run mode and the scheduler so telemetry, logging
+    and pipeline_status updates live in exactly one place.
+    """
+    result = await pipeline.run_once({"location_id": location_id})
+    if result.incident is not None:
+        logger.error(
+            "Pipeline incident on component {}: {} (retryable={})",
+            result.incident.component,
+            result.incident.error,
+            result.incident.retryable,
+        )
+    logger.info(
+        "Pipeline run complete: location_id={} fetched={} valid={} "
+        "inserted={} failed={} duration_seconds={:.2f}",
+        result.location_id,
+        result.records_fetched,
+        result.records_valid,
+        result.records_inserted,
+        result.records_failed,
+        result.duration_seconds,
+    )
+    for document in result.documents:
+        logger.info(
+            "MongoDB document: location_id={} timestamp={} measurements={} aqi={}",
+            document["metadata"]["location_id"],
+            document["timestamp"].isoformat(),
+            document["measurements"],
+            document["aqi"],
+        )
+
+    # Incidents of the current cycle only: run_once() resets the engine's
+    # incident list at the start of each run.
+    incidents = [
+        inc.to_dict() for inc in pipeline.self_healing_engine.incidents
+    ]
+    metrics: dict[str, int | float] = {
+        "pipeline.records.fetched": result.records_fetched,
+        "pipeline.records.valid": result.records_valid,
+        "pipeline.records.inserted": result.records_inserted,
+        "pipeline.records.failed": result.records_failed,
+        "pipeline.fetch.latency": result.duration_seconds,
+        "pipeline.incidents.count": len(incidents),
+    }
+    aqis = [
+        value
+        for document in result.documents
+        for key, value in document["aqi"].items()
+        if key.endswith("_aqi") and isinstance(value, (int, float))
+    ]
+    if aqis:
+        metrics["datavalue.aqi.current"] = max(aqis)
+
+    if datadog is None:
+        logger.warning("DATADOG_API_KEY is not configured; skipping Datadog.")
+    else:
+        try:
+            metric_result = datadog.send_metrics(
+                metrics,
+                tags=[
+                    "env:dev",
+                    "service:airquality-pipeline",
+                    f"location_id:{result.location_id}",
+                ],
+            )
+            logger.info("Datadog accepted metrics: {}", metric_result)
+        except Exception as error:
+            # Telemetry must never take the pipeline down with it.
+            logger.exception("Datadog metric submission failed: {}", error)
+        try:
+            datadog.send_logs(
+                {
+                    "message": "AirQuality pipeline run completed",
+                    "location_id": result.location_id,
+                    "records_fetched": result.records_fetched,
+                    "records_valid": result.records_valid,
+                    "records_inserted": result.records_inserted,
+                    "records_failed": result.records_failed,
+                    "duration_seconds": result.duration_seconds,
+                    "incidents": len(incidents),
+                },
+                status="error" if incidents else "info",
+            )
+            logger.info("Datadog accepted pipeline log.")
+        except Exception as error:
+            logger.exception("Datadog log submission failed: {}", error)
+        for incident in incidents:
+            # Datadog logs need JSON-safe values: httpx's encoder does not
+            # serialise datetime objects.
+            created_at = incident["created_at"]
+            created_at = (
+                created_at.isoformat()
+                if isinstance(created_at, datetime)
+                else str(created_at)
+            )
+            try:
+                datadog.send_logs(
+                    {
+                        "message": (
+                            f"Pipeline incident on {incident['component']}: "
+                            f"{incident['error']} "
+                            f"(retryable={incident['retryable']})"
+                        ),
+                        "incident_id": incident["incident_id"],
+                        "error_type": incident["error_type"],
+                        "component": incident["component"],
+                        "retryable": incident["retryable"],
+                        "attempt": incident["attempt"],
+                        "location_id": result.location_id,
+                        "created_at": created_at,
+                    },
+                    status="error",
+                )
+            except Exception as error:
+                logger.exception(
+                    "Datadog incident log failed for {}: {}",
+                    incident.get("incident_id"),
+                    error,
+                )
+
+    # Cập nhật pipeline status vào MongoDB (2.4)
+    database.update_pipeline_status(
+        result.status,
+        metrics=metrics,
+        incidents=incidents,
+    )
+    return result
+
+
+async def run_loop(
+    database: MongoDBClient,
+    datadog: DatadogIntegrator | None,
+    pipeline: Pipeline,
+    location_id: int,
+    interval_seconds: int | float | None = None,
+    stop_event: asyncio.Event | None = None,
+    max_cycles: int | None = None,
+) -> None:
+    """Run the pipeline every ``interval_seconds`` until stopped.
+
+    Graceful shutdown: SIGTERM/SIGINT only set the stop event so the cycle
+    in progress finishes first. A failing cycle is logged and swallowed —
+    the scheduler itself never dies, which is what keeps the pipeline
+    self-healing. When ``stop_event`` is supplied, signal handlers are not
+    installed (that keeps the loop testable).
+
+    ``max_cycles`` bounds the loop for smoke tests; ``None`` runs until
+    a stop request arrives.
+    """
+    interval = (
+        interval_seconds
+        if interval_seconds is not None
+        else int(os.getenv("FETCH_INTERVAL_SECONDS", "300"))
+    )
+    injected_event = stop_event is not None
+    if stop_event is None:
+        stop_event = asyncio.Event()
+
+    running_loop = asyncio.get_running_loop()
+    installed_handlers: list[signal.Signals] = []
+
+    def stop_on_signal(sig: signal.Signals) -> None:
+        logger.info(
+            "Received {}; scheduler will stop after the current cycle", sig
+        )
+        stop_event.set()
+
+    if not injected_event:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                running_loop.add_signal_handler(sig, stop_on_signal, sig)
+                installed_handlers.append(sig)
+            except (NotImplementedError, RuntimeError):
+                # Signals are not manageable on every platform.
+                pass
+
+    logger.info(
+        "Scheduler starting: location_id={} interval={}s",
+        location_id,
+        interval,
+    )
+    cycles = 0
+    while not stop_event.is_set():
+        try:
+            await run_cycle(database, datadog, pipeline, location_id)
+        except Exception:
+            logger.exception(
+                "Pipeline cycle failed unexpectedly; continuing the loop"
+            )
+        cycles += 1
+        if (max_cycles is not None and cycles >= max_cycles) or stop_event.is_set():
+            break
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            pass
+
+    for sig in installed_handlers:
+        try:
+            running_loop.remove_signal_handler(sig)
+        except (NotImplementedError, RuntimeError):
+            pass
+
+    logger.info("Scheduler stopped after {} cycle(s)", cycles)
+    try:
+        database.update_pipeline_status("stopped")
+    except Exception:
+        logger.exception("Could not record the stopped status in MongoDB.")
+
+
 async def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     logger.info("Starting AirQuality Guardian Pipeline")
@@ -136,89 +363,10 @@ async def main(argv: Sequence[str] | None = None) -> None:
                 limit=args.replay_limit,
             )
             return
-        result = await pipeline.run_once({"location_id": args.location_id})
-        if result.incident is not None:
-            logger.error(
-                "Pipeline incident on component {}: {} (retryable={})",
-                result.incident.component,
-                result.incident.error,
-                result.incident.retryable,
-            )
-        logger.info(
-            "Pipeline run complete: location_id={} fetched={} valid={} "
-            "inserted={} failed={} duration_seconds={:.2f}",
-            result.location_id,
-            result.records_fetched,
-            result.records_valid,
-            result.records_inserted,
-            result.records_failed,
-            result.duration_seconds,
-        )
-        for document in result.documents:
-            logger.info(
-                "MongoDB document: location_id={} timestamp={} measurements={} aqi={}",
-                document["metadata"]["location_id"],
-                document["timestamp"].isoformat(),
-                document["measurements"],
-                document["aqi"],
-            )
-
-        metrics: dict[str, int | float] = {
-            "pipeline.records.fetched": result.records_fetched,
-            "pipeline.records.valid": result.records_valid,
-            "pipeline.records.inserted": result.records_inserted,
-            "pipeline.records.failed": result.records_failed,
-            "pipeline.fetch.latency": result.duration_seconds,
-        }
-        aqis = [
-            value
-            for document in result.documents
-            for key, value in document["aqi"].items()
-            if key.endswith("_aqi") and isinstance(value, (int, float))
-        ]
-        if aqis:
-            metrics["datavalue.aqi.current"] = max(aqis)
-
-        if datadog is None:
-            logger.warning("DATADOG_API_KEY is not configured; skipping Datadog.")
+        if args.loop:
+            await run_loop(database, datadog, pipeline, args.location_id)
         else:
-            try:
-                metric_result = datadog.send_metrics(
-                    metrics,
-                    tags=[
-                        "env:dev",
-                        "service:airquality-pipeline",
-                        f"location_id:{result.location_id}",
-                    ],
-                )
-                logger.info("Datadog accepted metrics: {}", metric_result)
-            except httpx.HTTPError as error:
-                logger.exception("Datadog metric submission failed: {}", error)
-            try:
-                datadog.send_logs(
-                    {
-                        "message": "AirQuality pipeline run completed",
-                        "location_id": result.location_id,
-                        "records_fetched": result.records_fetched,
-                        "records_valid": result.records_valid,
-                        "records_inserted": result.records_inserted,
-                        "records_failed": result.records_failed,
-                        "duration_seconds": result.duration_seconds,
-                    }
-                )
-                logger.info("Datadog accepted pipeline log.")
-            except httpx.HTTPError as error:
-                logger.exception("Datadog log submission failed: {}", error)
-
-        # Cập nhật pipeline status vào MongoDB (2.4)
-        incidents = [
-            inc.to_dict() for inc in pipeline.self_healing_engine.incidents
-        ]
-        database.update_pipeline_status(
-            result.status,
-            metrics=metrics,
-            incidents=incidents,
-        )
+            await run_cycle(database, datadog, pipeline, args.location_id)
     finally:
         if datadog is not None:
             datadog.close()

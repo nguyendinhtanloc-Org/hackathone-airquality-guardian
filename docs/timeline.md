@@ -336,11 +336,22 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
    - PipelineRunResult thêm field: attempts
    - Verify: 9 test trong tests/unit/test_pipeline_retry.py
 
-2.3 Scheduler run_loop()
-   File: src/main.py
-   - Chạy pipeline mỗi FETCH_INTERVAL_SECONDS (mặc định 300)
-   - Graceful shutdown: bắt SIGTERM/SIGINT → dừng sau khi vòng hiện tại xong
-   - Verify: test giả lập 2 vòng rồi stop → đúng 2 lần chạy
+2.3 Scheduler run_loop()   ✅ XONG 25/10
+   Files: src/main.py
+   - Tách run_cycle() (1 vòng: fetch → insert → Datadog → pipeline_status)
+     để single-run và loop dùng chung MỘT nơi duy nhất
+   - Cờ mới: --loop (mặc định vẫn chạy 1 lần → CI/E2E không treo)
+     Deploy cloud: python -m src.main --loop
+   - run_loop(): chạy run_cycle() mỗi FETCH_INTERVAL_SECONDS (mặc định 300)
+   - Graceful shutdown: SIGTERM/SIGINT chỉ set stop_event → vòng đang chạy
+     được hoàn tất. Sleep giữa 2 vòng dùng asyncio.wait_for(stop_event,
+     timeout=interval) → nhận signal thì thức dậy NGAY, không chờ hết interval
+   - Chống chết scheduler: run_cycle raise → log.exception + nuốt,
+     vòng sau vẫn chạy (lỗi 1 vòng không giết được pipeline)
+   - Stop sạch → update_pipeline_status("stopped") (trạng thái thứ 3)
+   - Verify: 5 test trong tests/unit/test_scheduler.py (max_cycles,
+     stop trước khi bắt đầu, cycle lỗi không giết scheduler,
+     stop trong sleep thoát <1s dù interval=999s, --loop flag)
 
 2.4 Vòng đời pipeline_status   ✅ XONG 23/10
    File: src/main.py
@@ -352,11 +363,19 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
    - Verify: 70/70 test vẫn pass; kiểm tra MongoDB aggregation $group
      theo status, last_fetch timestamp.
 
-2.5 Incident lên Datadog
-   File: src/main.py
-   - Gửi log status="error" cho mỗi incident
-   - Thêm metric pipeline.records.failed, pipeline.incidents.count
-   - Verify: test main() với fetcher fail → datadog.send_logs được gọi
+2.5 Incident lên Datadog   ✅ XONG 26/10
+   File: src/main.py (run_cycle)
+   - Metrics thêm pipeline.incidents.count (số incident của VÒNG HIỆN TẠI,
+     vì run_once() đã reset_incidents mỗi vòng)
+   - Log tổng kết: status="error" nếu có incident, "info" nếu không;
+     kèm field incidents=<số>
+   - MỖI incident: 1 log riêng status="error" kèm incident_id (truy vết),
+     error_type, component, retryable, attempt, location_id,
+     created_at (ISO string để JSON-safe, vì httpx không serialise datetime)
+   - Chặn lỗi observability không giết pipeline: 3 khối catch Exception
+     (trước chỉ catch httpx.HTTPError) → Datadog intake down vẫn chạy tiếp
+   - pipeline_status (MongoDB) cũng nhận incidents cùng 1 danh sách
+   - Verify: 4 test trong tests/unit/test_datadog_incidents.py
 
 2.6 CLI --replay   ✅ XONG 23/10
    Files: src/main.py, src/self_healing/quarantine.py, src/self_healing/engine.py

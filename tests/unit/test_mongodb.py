@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, call, patch
 
-from dns import query, update
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from src.database.mongodb import MongoDBClient
 
@@ -24,10 +24,92 @@ def mongo_client():
     ), client, collections
 
 
+def _build_client(monkeypatch, data_retention_days: str):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", data_retention_days)
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    return MongoDBClient(database_name="test_airquality", client=client), collections
+
+
 def test_initialization_creates_required_indexes(mongo_client):
     _, _, collections = mongo_client
 
-    print(collections["air_quality"].create_index.call_args_list)
+    indexes = collections["air_quality"].create_index.call_args_list
+
+    # Regular lookup indexes plus the unique dedup index.
+    assert indexes[1] == call("metadata.location_id")
+    assert indexes[2] == call(
+        "dedup_key",
+        unique=True,
+        name="air_quality_dedup_idx",
+    )
+
+    # Quarantine indexes: claim/lease scan + per-cycle cleanup prune.
+    q_indexes = collections["quarantine_events"].create_index.call_args_list
+    assert call([("status", 1), ("created_at", 1)], name="pending_quarantine_idx") in q_indexes
+    assert call(
+        [("status", 1), ("in_flight_at", 1)],
+        name="in_flight_quarantine_idx",
+    ) in q_indexes
+    assert call("expires_at") in q_indexes
+
+
+def test_data_retention_creates_ttl_index_on_timestamp(monkeypatch):
+    # Without a TTL, air_quality grows without bound on a long-running
+    # deployment; DATA_RETENTION_DAYS finally drives one.
+    _, collections = _build_client(monkeypatch, "30")
+    indexes = collections["air_quality"].create_index.call_args_list
+    assert indexes[0] == call("timestamp", expireAfterSeconds=30 * 86400)
+
+
+def test_data_retention_zero_creates_plain_timestamp_index(monkeypatch):
+    """0 means keep forever: no expireAfterSeconds, plain lookup index."""
+    _, collections = _build_client(monkeypatch, "0")
+    indexes = collections["air_quality"].create_index.call_args_list
+    assert indexes[0] == call("timestamp")
+
+
+def test_explicit_data_retention_days_param_wins_over_env(monkeypatch):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "0")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    MongoDBClient(
+        database_name="test_airquality",
+        client=client,
+        data_retention_days=7,
+    )
+    assert collections["air_quality"].create_index.call_args_list[0] == call(
+        "timestamp", expireAfterSeconds=7 * 86400
+    )
+
+
+def test_negative_data_retention_days_rejected(monkeypatch):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "-1")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    with pytest.raises(ValueError, match="DATA_RETENTION_DAYS must be >= 0"):
+        MongoDBClient(database_name="test_airquality", client=client)
 
 
 def test_initialization_uses_database_from_uri_when_env_database_is_missing(
@@ -69,7 +151,109 @@ def test_insert_air_quality_returns_inserted_id(mongo_client):
     inserted_id = database_client.insert_air_quality(document)
 
     assert inserted_id == "record-1"
-    collections["air_quality"].insert_one.assert_called_once_with(document)
+    # The stored record is the caller's document plus a stable dedup_key.
+    stored = collections["air_quality"].insert_one.call_args.args[0]
+    assert stored["dedup_key"] == MongoDBClient._dedup_key(document)
+    assert stored["metadata"] == document["metadata"]
+
+
+def test_dedup_key_is_stable_for_the_same_observation():
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5, "o3": 40.0},
+        "aqi": {"pm25_aqi": 52},
+    }
+    other_event = dict(document, event_id="different-uuid")
+    assert MongoDBClient._dedup_key(document) == MongoDBClient._dedup_key(other_event)
+
+
+def test_dedup_key_differs_when_values_differ():
+    base = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    assert MongoDBClient._dedup_key(base) != MongoDBClient._dedup_key(
+        dict(base, measurements={"pm25": 13.0})
+    )
+
+
+def test_insert_air_quality_is_idempotent_on_duplicate(mongo_client):
+    database_client, _, collections = mongo_client
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    collections["air_quality"].insert_one.side_effect = DuplicateKeyError(
+        "duplicate"
+    )
+
+    # No raise, no crash: a re-inserted observation is a no-op.
+    assert database_client.insert_air_quality(document) is None
+
+
+def _bare_database_client() -> tuple:
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    return MongoDBClient(database_name="test_airquality", client=client), collections
+
+
+def test_quarantine_retention_days_follows_env_at_construction(monkeypatch):
+    # Regression: retention was a class attribute read at import time, so
+    # .env values were silently ignored. Now it is read per instance.
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "30")
+    database_client, _ = _bare_database_client()
+    assert database_client.quarantine_retention_days == 30
+
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "2")
+    database_client, _ = _bare_database_client()
+    assert database_client.quarantine_retention_days == 2
+
+
+def test_quarantine_retention_days_explicit_wins_over_env(monkeypatch):
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database_client = MongoDBClient(
+        database_name="test_airquality",
+        client=client,
+        quarantine_retention_days=9,
+    )
+    assert database_client.quarantine_retention_days == 9
+
+
+def test_quarantine_retention_days_must_be_positive():
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    with pytest.raises(ValueError, match="must be > 0"):
+        MongoDBClient(
+            database_name="test_airquality",
+            client=client,
+            quarantine_retention_days=0,
+        )
 
 
 def test_insert_quarantine_stores_pending_record(mongo_client):

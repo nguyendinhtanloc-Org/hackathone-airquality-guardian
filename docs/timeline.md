@@ -280,16 +280,58 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
 |------|---------------------------|--------------------------------------|
 | **20/10 (T4)** | 2.1 Nối `SelfHealingEngine` vào `Pipeline.run_once()`: lỗi → `handle_error()` → Incident ✅ | 2.11 `scripts/apply_datadog.py`: apply `config/datadog/dashboard.json` + `monitors.json` lên Datadog thật |
 | **21/10 (T5)** | 2.2 Retry loop + exponential backoff trong `Pipeline.run_once()` (dùng `engine.should_retry()`, `RETRY_BACKOFF_SECONDS`) ✅ | 2.8 Nối `QuarantineManager` vào MongoDB: truyền `collection` thật, bỏ đường in-memory khỏi luồng chính |
-| **22/10 (T6)** | 2.3 Scheduler `run_loop()` chạy mỗi `FETCH_INTERVAL_SECONDS`, graceful shutdown (SIGTERM) | 2.9 `MongoDBClient`: thêm `query_pending_quarantine()`, `mark_quarantine_replayed()` |
-| **23/10 (T7)** | 2.4 Vòng đời `pipeline_status`: `running` → `degraded` / `stopped` | 2.10 `air_quality` thành **Time Series collection** trên Atlas + index tuning (`timeField`, `metaField`) |
-| **24/10 (T8)** | 2.5 Incident → Datadog log (`status=error`) + metric `pipeline.incidents.count` | 2.12 Monitor runtime: `create_monitor()` được gọi khi có incident, tag theo location, auto-resolve |
+| **22/10 (T6)** | 2.3 Scheduler `run_loop()` chạy mỗi `FETCH_INTERVAL_SECONDS`, graceful shutdown (SIGTERM) ✅ | 2.9 `MongoDBClient`: thêm `query_pending_quarantine()`, `mark_quarantine_replayed()` |
+| **23/10 (T7)** | 2.4 Vòng đời `pipeline_status`: `running` → `degraded` / `stopped` ✅ | 2.10 `air_quality` thành **Time Series collection** trên Atlas + index tuning (`timeField`, `metaField`) |
+| **24/10 (T8)** | 2.5 Incident → Datadog log (`status=error`) + metric `pipeline.incidents.count` ✅ | 2.12 Monitor runtime: `create_monitor()` được gọi khi có incident, tag theo location, auto-resolve |
 | **25/10 (CN)** | 2.6 CLI `python -m src.main --replay` ✅ (đã làm sớm 23/10) | 2.13 CLI `python -m src.main --report`: dùng `aggregate_aqi()` + `query_air_quality()` xuất báo cáo AQI theo location |
-| **26/10 (T2)** | 2.7 E2E test + CI/CD + deploy cloud | 2.14 Docs: `DATADOG.md`, `DATA_MODEL.md`, `SELF_HEALING.md` (viết sau khi code xong) |
-| **27/10 (T3)** | Verify trên cloud: data chảy vào Atlas, dashboard update | Setup Datadog thật + screenshot + slide |
+| **26/10 (T2)** | 2.7 E2E test + CI/CD ✅ (deploy chuyển Người 2, runbook docs/DEPLOY.md) | 2.14 Docs: `DATADOG.md`, `DATA_MODEL.md`, `SELF_HEALING.md` (viết sau khi code xong) |
+| **27/10 (T3)** | (2.1c–2.1e + 2.15 done ✅; cloud deploy chuyển Người 2 — TÙY CHỌN, không chặn demo) | Setup Datadog thật + screenshot + slide |
 | **28/10 (T4)** | Test cảnh báo thật: AQI cao → monitor trigger → Slack | Kịch bản + dựng slide, tập trình luyện 1 lần |
 | **29/10 (T5)** | Test recovery: tắt network → retry → quarantine → bật lại → replay | Quay video demo (OBS Studio, màn hình cloud + webcam) |
 | **30/10 (T6)** | Review toàn bộ code, đọc lại README, kiểm tra docs khớp code | Review docs, rà slide lần cuối |
 | **31/10 (T7)** | **NỘP BÀI 23:59 ICT** | **NỘP BÀI 23:59 ICT** |
+
+### Người 1: LUỒNG THẬT (read me trước khi đụng code pipeline)
+
+> Viết 27/10, thay cho việc phải đọc lại từng commit. Cho Người 2 (và judge)
+> thấy DỮ LIỆU CHẢY THẾ NÀO và AI LÀM GÌ Ở ĐÂU.
+
+```
+1. CHẠY:  python -m src.main            (1 cycle rồi thoát)
+          python -m src.main --loop     (mỗi 5 phút, SIGTERM/SIGINT stop mềm)
+          python -m src.main --replay   (chạy lại record cách ly)
+
+2. MỖI CYCLE (run_cycle trong main.py):
+   prune_expired_quarantine()          ← xóa record quarantine hết hạn
+     ↓
+   pipeline.run_once({location_id})    ← src/pipeline.py
+     ├─ fetcher.fetch() (OpenAQ thật)
+     │   lỗi → engine.handle_error() → retry backoff 10/20/40s (≤3 lần)
+     │   vẫn lỗi → status "degraded" + record QUARANTINE (quarantine_events)
+     ├─ validator (loại giá trị âm/vượt ngưỡng vật lý)
+     ├─ AQI + insert_air_quality() → Atlas (dedup_key unique index:
+     │   record đã có bị DuplicateKeyError chặn → KHÔNG TRÙNG)
+     └─ lỗi persistence → degraded, BÁO SỐ INSERT THẬT (không cheat =0)
+     ↓
+   Datadog: metrics + log (có incident thì log status=error)
+     ↓
+   Atlas: pipeline_status (_id "current") = running | degraded
+
+3. REPLAY (--replay hoặc cycle sau tự chạy được):
+   record pending/in_flight-hết-lease → CLAIM CAS (pending→in_flight, +1 attempts)
+   → processor chạy lại pipeline → OK: in_flight→replayed / fail: pending (retry)
+   hoặc failed khi chạm MAX_REPLAY_ATTEMPTS (terminal)
+
+4. QUY ƯỚC DB (quan trọng khi Người 2 đụng mongodb.py):
+   - A (QuarantineManager) = NGUỒN GHI LIFECYCLE DUY NHẤT của
+     collection quarantine_events (add/claim/replayed/failed/cleanup)
+   - B (MongoDBClient.mark_quarantine_*) = KHÔNG dùng đổi status (sai tầng).
+     Chờ Người 2 hạ xuống read-view (mục "⬜ ĐỂ LẠI" trong 2.8)
+   - Chạy 2 instance --loop cùng collection = tránh (CAS đã bảo vệ,
+     nhưng 1 instance là đủ)
+
+5. ENV QUAN TRỌNG: xem .env.example (đã comment từng biến).
+   Demo local nhanh: FETCH_INTERVAL_SECONDS=30 (đặt lại 300 sau demo).
 
 ### Chi tiết hạng mục Người 1 — Runtime & Pipeline
 
@@ -330,7 +372,9 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
      là nơi duy nhất quyết định "retry hay quarantine"
    - engine.should_retry() kiểm tra attempt < max_retries (0-based)
      → MAX_RETRIES=3 nghĩa là 4 lần gọi fetch (1 lần đầu + 3 lần retry)
-   - Backoff = RETRY_BACKOFF_SECONDS * 2^attempt → 30s → 60s → 120s
+   - Backoff = RETRY_BACKOFF_SECONDS * 2^attempt → mặc định 10s → 20s → 40s
+     (25/10 hạ từ 30s: tổng chờ khi retry cạn = 70s, nằm gọn trong chu kỳ
+     300s của scheduler, tránh trễ nhịp; .env có thể nâng về 30 nếu API yếu)
    - main.py: SelfHealingEngine(max_retries=int(os.getenv("MAX_RETRIES", "3")))
    - Xoá fetcher.max_retries (tránh 2 nơi cùng quyết định số lần retry)
    - PipelineRunResult thêm field: attempts
@@ -389,13 +433,60 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
    - QuarantineManager nối vào MongoDB: collection=database.quarantine_events
    - Verify: 12 test trong tests/unit/test_replay_cli.py
 
-2.7 E2E test + CI/CD + deploy
-   Files: tests/integration/, .github/workflows/, Dockerfile
-   - Kịch bản 1: fetch OK → insert Atlas
-   - Kịch bản 2: fetch fail 3 lần → quarantine 1 record → status degraded
-   - Kịch bản 3: replay → insert thành công → status running
-   - Deploy: chọn 1 trong AWS ECS / GCP Cloud Run / Azure Container Apps (free tier)
-   - Verify: pytest pass + pipeline chạy được trên cloud
+2.1c Chống trùng dữ liệu (dedup)   ✅ XONG 26/10
+   Files: src/database/mongodb.py, tests/unit/test_mongodb.py
+   - Vấn đề: insert crash giữa chừng (1/3 record vào DB) rồi --replay
+     fetch LẠI → record đã lưu bị insert trùng (event_id sinh uuid4 mỗi lần,
+     không dedup được)
+   - Sửa: mỗi document có field dedup_key = SHA-256(metadata+timestamp+
+     measurements+aqi) → unique index air_quality_dedup_idx.
+     insert_air_quality bắt DuplicateKeyError → trả None (idempotent,
+     record đã có thì bỏ qua, KHÔNG crash)
+   - Verify: 3 test mới (index unique được tạo, dedup_key stable cho
+     cùng observation dù event_id khác, duplicate → None)
+
+2.1d Trần replay attempts   ✅ XONG 26/10
+   Files: src/self_healing/quarantine.py, tests/unit/test_self_healing.py
+   - Vấn đề: record replay mãi fail (vd location không có data) bị replay
+     lại VÔ HẠN mỗi lần --replay (status luôn quay về "pending")
+   - Sửa: MAX_REPLAY_ATTEMPTS (mặc định 5, qua env): chạm trần →
+     status="failed" (terminal, không replay nữa, vẫn giữ trong store
+     để inspect). Record "failed" không còn eligible cho replay
+   - Verify: 2 test mới (chạm trần → failed → không replay nữa;
+     cap=0 → ValueError)
+
+2.1e Backoff mặc định 30s → 10s   ✅ XONG 26/10
+   - Tổng chờ retry cạn: 210s → 70s, nằm gọn trong chu kỳ 300s của
+     scheduler (2.3). .env + .env.example cập nhật. Muốn API yếu thì
+     đặt RETRY_BACKOFF_SECONDS=30 lại
+
+2.7 E2E test + CI   ✅ XONG 26/10 (deploy cloud = TÙY CHỌN, không chặn demo)
+   Files: tests/e2e/test_pipeline_e2e.py, .github/workflows/ci.yml,
+          src/fetcher/fetcher.py (client_factory seam cho test)
+   - E2E chạy các lớp THẬT (Pipeline, MongoDBClient, SelfHealingEngine,
+     QuarantineManager, DataFetcher) chỉ mock 2 boundary ngoài:
+       * OpenAQ: httpx.MockTransport (code fetcher + retry chạy thật)
+       * MongoDB: fake in-memory thực thi unique index dedup_key
+         (ném DuplicateKeyError thật) — không cần Atlas/Docker,
+         CI chạy được
+   - 4 kịch bản:
+     1. happy path: fetch OK → 2 document + pipeline_status="running"
+     2. OpenAQ 5xx ×3 retry → degraded + 1 record quarantine +
+        incident ghi vào pipeline_status
+     3. partial write (insert #2 crash) → degraded + 1 record pending;
+        vòng sau fetch lại → CHỈ insert record thiếu, record đã có bị
+        unique index chặn → KHÔNG TRÙNG dữ liệu (evidence dedup)
+     4. replay khi pipeline đã phục hồi → record đánh dấu "replayed"
+   - CI: chạy tests/unit + tests/integration + tests/e2e, trigger thêm
+     branch data-pipeline
+   - Deploy cloud: (27/10) đánh giá LẠI: KHÔNG BẮT BUỘC cho demo.
+     * Lý do: tiêu chí chấm (proposal mục 14: Sáng tạo 30 / Kỹ thuật 30 /
+       Tác động 30 / Trình bày 10) KHÔNG có hạng mục "chạy trên cloud";
+       deliverable P1 là "demo video" — quay từ local vẫn đủ.
+     * Nếu Người 2 có thời gian: xem docs/DEPLOY.md (runbook: bảng env
+       + 4 bước verify + KỊCH BẢN FALLBACK DEMO LOCAL: python -m src.main
+       vẫn push Atlas thật + Datadog thật → thiếu cloud không sập demo).
+     * Không deploy → bỏ qua mục này, KHÔNG ảnh hưởng các mục đã ✅.
 ```
 
 ### Chi tiết hạng mục Người 2 — Data Platform & Observability
@@ -408,18 +499,33 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
     - Cần DATADOG_API_KEY + DATADOG_APP_KEY
     - Verify: chạy script → dashboard + 3 monitor xuất hiện trên Datadog UI
 
-2.8 Nối QuarantineManager vào MongoDB   🟡 ĐÃ LÀM 1 PHẦN (23/10)
+2.8 Nối QuarantineManager vào MongoDB   ✅ XONG 27/10
     File: src/self_healing/quarantine.py + src/main.py
     - ✅ main.py: QuarantineManager(collection=database.quarantine_events)
       (làm trong 2.6 vì --replay không có collection thì vô dùng)
     - ✅ _get_pending_records() + _update_record() đã tự đọc/ghi collection
       → 2.6 chạy được với MongoDB thật
-    - ⬜ Còn lại: insert_quarantine() trong MongoDBClient đang thiếu field
-      (expires_at, updated_at, replay_attempts) so với QuarantineManager.
-      Nên BỎ hẳn insert_quarantine() khỏi MongoDBClient (tránh 2 nơi ghi
-      cùng 1 collection với schema khác nhau), hoặc sửa cho khớp.
-    - ✅ Giữ đường in-memory cho unit test
-    - Verify: test với mock collection → insert_one được gọi
+    - ✅ (27/10) build_pipeline() FAIL-FAST: từ chối khởi động pipeline nếu
+      database.quarantine_events is None → con đường in-memory KHÔNG BAO GIỜ
+      chạy được ở production. In-memory chỉ còn tồn tại khi dev/test build
+      QuarantineManager() trực tiếp (khi đó log WARNING 1 lần per process).
+    - ✅ (27/10) Vá concurrency cho A (mượn pattern CAS của B, xem 2.9):
+      claim replay là "pending → in_flight" (CAS, kèm +1 replay_attempts),
+      settle là "in_flight → replayed/failed". 2 worker replay cùng record:
+      chỉ 1 claim thắng. Lease in_flight (QUARANTINE_CLAIM_LEASE_SECONDS,
+      mặc định 600s): worker crash giữa replay → claim cũ bị thu hồi,
+      record không kẹt in_flight vĩnh viễn.
+    - ⬜ ĐỂ LẠI (đợi sync với Người 2): insert_quarantine() của MongoDBClient
+      mang bộ field B (event_id, retry_count, error_message) chồng lên
+      schema A (quarantine_id, replay_attempts, last_replay_error).
+      Chốt: A = nguồn ghi lifecycle duy nhất; query_pending_quarantine giữ
+      làm read/inspect; mark_quarantine_replayed/failed KHÔNG dùng để đổi
+      status (sai tầng) → hạ B xuống read-view hoặc bỏ.
+    - Verify: test_build_pipeline_refuses_to_run_without_quarantine_collection,
+      test_build_pipeline_wires_quarantine_to_mongo_collection,
+      test_two_workers_cannot_claim_the_same_record,
+      test_failed_record_cannot_be_flipped_back_to_replayed,
+      test_stale_in_flight_claim_is_reclaimed_after_lease
 
 2.9 API quarantine trong MongoDBClient   ✅ XONG 25/10 (Người 2, PR #4)
     File: src/database/mongodb.py
@@ -432,8 +538,41 @@ NGƯỜI 2: 7 hạng mục — Data Platform & Observability (6 code + 1 docs)
       → ĐÃ CÓ 2 HỆ API CÙNG VIẾT collection quarantine_events:
         (a) QuarantineManager: sở hữu schema, dùng cho ghi + replay
         (b) MongoDBClient.query_pending_quarantine/mark_*: dùng để inspect
-      QUY ẾC: giữ (a) là nguồn ghi chính. (b) chỉ để query/inspect,
-      KHÔNG dùng mark_* để replay (tránh 2 nơi cùng đổi status → lệch).
+      QUYẾT (27/10): giữ (a) là nguồn ghi lifecycle DUY NHẤT; (b) chỉ
+      query/inspect (read-only). Pattern CAS (guard theo trạng thái) của
+      (b) đã được đưa vào (a): xem mục 2.8. mark_quarantine_replayed/
+      failed của (b) không còn được dùng để đổi status (chờ Người 2
+      hạ xuống read-view).
+
+2.15 Audit + hardening toàn diện (Người 1)   ✅ XONG 27/10
+    Files: src/database/mongodb.py, src/pipeline.py, src/main.py,
+           .env.example, tests/ (116 → 131 test)
+    Audit read-only trước, fix từng điểm + test kèm, chạy 7/7:
+    - BUG: QUARANTINE_RETENTION_DAYS là class-attr đọc lúc IMPORT →
+      .env luôn bị nuốt (đã chứng minh: .env=30 vẫn chạy với 7).
+      Sửa: đọc instance-attr lúc construct + build_pipeline truyền
+      retention vào QuarantineManager (A và B giờ dùng MỘT nguồn).
+    - BUG: degraded path (crash giữa chừng) báo records_inserted=0 /
+      documents=() dù đã insert N record thật → Datadog báo sai.
+      Sửa: báo số THẬT (dedup index chặn replay trùng nên an toàn).
+    - RỦI RO PHÌNH TO: air_quality không có retention (DATA_RETENTION_DAYS
+      nằm im trong .env, không ai đọc) → thêm TTL index trên timestamp
+      (DATA_RETENTION_DAYS, 0 = giữ mãi).
+    - RỦI RO PHÌNH TO: loguru chỉ rotation không retention → log cũ
+      tích lại đầy disk. Thêm retention=LOG_RETENTION_DAYS (mặc định 14).
+    - RỦI RO PHÌNH TO: cleanup() quarantine không ai gọi runtime →
+      record hết hạn không bao giờ bị xóa. Thêm prune_expired_quarantine()
+      gọi đầu mỗi cycle (single-run lẫn --loop), try/except không giết
+      pipeline.
+    - PERF: query claim/lease ($or in_flight + in_flight_at) và cleanup
+      (expires_at) thiếu index → collection scan khi to. Thêm
+      in_flight_quarantine_idx + index expires_at.
+    - DỌN THỪA: xóa SENSOR_101/SENSOR_102 (E2E không dùng),
+      "from dns import query, update" (rác), sửa docstring mode
+      "fail2nd" không tồn tại.
+    - CHƯA DỌN (đợi Người 2, mục C1): bộ field B trong insert_quarantine
+      + mark_quarantine_replayed/failed — xem phần "⬜ ĐỂ LẠI" của 2.8.
+    - Verify: 131/131 pass (unit + integration + e2e).
 
 2.10 air_quality thành Time Series collection   🟡 ĐÃ TẠO FILE, CHƯA LÀM
     Files: src/database/mongodb.py + script setup Atlas

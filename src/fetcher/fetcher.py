@@ -16,12 +16,20 @@ class AirQualityFetchError(Exception):
 class DataFetcher:
     """Fetches air quality data from OpenAQ API v3"""
     
-    def __init__(self):
+    def __init__(self, client_factory=None):
         self.base_url = "https://api.openaq.org/v3"
         self.api_key = os.getenv("OPENAQ_API_KEY")
         self.timeout = 10
         # Cache để không fetch lại sensor info
         self._sensor_cache: dict = {}
+        # Injectable client factory so tests can supply a MockTransport.
+        # Defaults to a real httpx.AsyncClient in production.
+        self._client_factory = client_factory
+
+    def _make_client(self) -> httpx.AsyncClient:
+        if self._client_factory is not None:
+            return self._client_factory()
+        return httpx.AsyncClient(timeout=self.timeout)
     
     def _get_headers(self) -> dict:
         headers = {"accept": "application/json"}
@@ -62,7 +70,7 @@ class DataFetcher:
         latest_url = f"{self.base_url}/locations/{location_id}/latest"
         
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with self._make_client() as client:
                 # Fetch measurements
                 response = await client.get(latest_url, headers=self._get_headers())
                 response.raise_for_status()

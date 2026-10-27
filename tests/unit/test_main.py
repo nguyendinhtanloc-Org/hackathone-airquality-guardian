@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,8 @@ async def test_main_prints_run_summary_and_sends_datadog_telemetry(
 ):
     monkeypatch.setenv("DATADOG_API_KEY", "test-api-key")
     database = MagicMock()
+    database.quarantine_events = "the-collection"
+    database.quarantine_retention_days = 7
     fetcher = MagicMock()
     fetcher.fetch = AsyncMock(
         return_value={
@@ -48,3 +51,78 @@ async def test_main_prints_run_summary_and_sends_datadog_telemetry(
     assert log["records_inserted"] == 1
     datadog.close.assert_called_once_with()
     database.close.assert_called_once_with()
+
+
+def test_prune_expired_quarantine_calls_cleanup_and_survives_failures():
+    pipeline = MagicMock()
+    cleanup = pipeline.self_healing_engine.quarantine_manager.cleanup
+    cleanup.return_value = 3
+
+    pipeline_main.prune_expired_quarantine(pipeline)
+    cleanup.assert_called_once()
+
+    # A failing cleanup must never take the pipeline down.
+    cleanup.side_effect = RuntimeError("mongo down")
+    pipeline_main.prune_expired_quarantine(pipeline)  # must not raise
+    assert cleanup.call_count == 2
+
+
+def test_run_cycle_prunes_expired_quarantine_before_fetching(monkeypatch):
+    prune_calls = []
+    monkeypatch.setattr(
+        pipeline_main,
+        "prune_expired_quarantine",
+        lambda p: prune_calls.append(p),
+    )
+    database = MagicMock()
+    datadog = MagicMock()
+    pipeline = MagicMock()
+
+    async def run_once(params):
+        pipeline_run = pipeline_main.PipelineRunResult(
+            location_id=4946813,
+            records_fetched=0,
+            records_valid=0,
+            records_inserted=0,
+            records_failed=0,
+            duration_seconds=0.0,
+            documents=(),
+        )
+        return pipeline_run
+
+    pipeline.run_once = run_once
+
+    asyncio.run(pipeline_main.run_cycle(database, datadog, pipeline, 4946813))
+    assert prune_calls == [pipeline]
+
+
+def test_build_pipeline_refuses_to_run_without_quarantine_collection():
+    """2.8: the production wiring must never fall back to in-memory
+    quarantine, where records would be lost on restart."""
+    database = MagicMock()
+    database.quarantine_events = None
+
+    with pytest.raises(RuntimeError, match="not wired to MongoDB"):
+        pipeline_main.build_pipeline(database)
+
+
+def test_build_pipeline_wires_quarantine_to_mongo_collection():
+    database = MagicMock()
+    database.quarantine_events = "the-collection"
+    database.quarantine_retention_days = 7
+
+    _, engine = pipeline_main.build_pipeline(database)
+
+    assert engine.quarantine_manager.collection is database.quarantine_events
+
+
+def test_build_pipeline_shares_one_retention_setting_with_database():
+    """A and B must use the same retention: the manager's TTL now comes
+    from the database's .env-driven value, not the 30-day default."""
+    database = MagicMock()
+    database.quarantine_events = "the-collection"
+    database.quarantine_retention_days = 7
+
+    _, engine = pipeline_main.build_pipeline(database)
+
+    assert engine.quarantine_manager.retention_days == 7

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
+from uuid import uuid4
 from .quarantine import QuarantineManager
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -16,6 +17,20 @@ class Incident:
     incident_id: Optional[str] = None
     created_at: datetime = field(default_factory=_utcnow)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable view of the incident for logs and MongoDB."""
+        return {
+            "error": self.error,
+            "error_type": self.error_type,
+            "component": self.component,
+            "retryable": self.retryable,
+            "attempt": self.attempt,
+            "max_retries": self.max_retries,
+            "incident_id": self.incident_id,
+            "created_at": self.created_at,
+            "metadata": dict(self.metadata),
+        }
 @dataclass
 class QuarantinedData:
     """Reference to data that has been isolated for later replay."""
@@ -47,6 +62,15 @@ class SelfHealingEngine:
             retryable_errors or self.DEFAULT_RETRYABLE_ERRORS
         )
         self.incidents: list[Incident] = []
+
+    def reset_incidents(self) -> None:
+        """Drop incidents from previous runs.
+
+        The scheduler reuses one engine across cycles, so incidents must be
+        cleared per run or the list grows without bound and every stored
+        incident list keeps growing too.
+        """
+        self.incidents.clear()
     def handle_error(
         self,
         error: Exception,
@@ -66,6 +90,7 @@ class SelfHealingEngine:
             retryable=retryable,
             attempt=attempt,
             max_retries=self.max_retries,
+            incident_id=str(uuid4()),
             metadata=metadata or {},
         )
         self.incidents.append(incident)
@@ -122,6 +147,16 @@ class SelfHealingEngine:
     ) -> dict[str, int]:
         """Replay quarantined records through the supplied processor."""
         return self.quarantine_manager.replay(
+            processor=processor,
+            limit=limit,
+        )
+    async def replay_quarantined_async(
+        self,
+        processor: Any,
+        limit: int = 100,
+    ) -> dict[str, int]:
+        """Replay quarantined records through an async processor."""
+        return await self.quarantine_manager.replay_async(
             processor=processor,
             limit=limit,
         )

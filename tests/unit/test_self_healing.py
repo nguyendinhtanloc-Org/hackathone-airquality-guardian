@@ -84,6 +84,108 @@ def test_replay_failure_keeps_record_pending():
     assert record["status"] == "pending"
     assert record["replay_attempts"] == 1
     assert record["last_replay_error"] == "still unavailable"
+def test_replay_failure_caps_out_to_failed_status():
+    manager = QuarantineManager(max_replay_attempts=2)
+    engine = SelfHealingEngine(quarantine_manager=manager)
+    engine.quarantine_data({"pm25": 42}, "temporary failure")
+
+    def failing(_data):
+        raise RuntimeError("still down")
+
+    # First attempt: attempts=1 < cap, stays pending for a later replay.
+    first = engine.replay_quarantined(failing)
+    record = next(iter(manager._memory_store.values()))
+    assert first == {"processed": 1, "succeeded": 0, "failed": 1}
+    assert record["replay_attempts"] == 1
+    assert record["status"] == "pending"
+
+    # Second attempt reaches the cap: record is parked as "failed".
+    second = engine.replay_quarantined(failing)
+    assert second == {"processed": 1, "succeeded": 0, "failed": 1}
+    assert record["status"] == "failed"
+    assert record["replay_attempts"] == 2
+
+    # A failed record is no longer eligible for replay.
+    third = engine.replay_quarantined(failing)
+    assert third == {"processed": 0, "succeeded": 0, "failed": 0}
+
+
+def test_replay_cap_requires_positive_limit():
+    with pytest.raises(ValueError):
+        QuarantineManager(max_replay_attempts=0)
+
+
+# --- concurrency: CAS claim guard (two workers, one record) ------------
+
+
+def test_two_workers_cannot_claim_the_same_record():
+    manager_a = QuarantineManager()
+    record = manager_a.add_to_quarantine({"location_id": 4946813}, "boom")
+
+    # Worker B shares the same store (simulates two processes that both
+    # talk to the same MongoDB collection).
+    manager_b = QuarantineManager()
+    manager_b._memory_store = manager_a._memory_store
+
+    # Worker A claims the record first: pending -> in_flight (CAS guard
+    # also bumps replay_attempts to 1 on claim).
+    claimed_a = manager_a._pending_for_replay(limit=10)
+    assert [rid for rid, _ in claimed_a] == [record["quarantine_id"]]
+    assert manager_a._memory_store[record["quarantine_id"]]["status"] == "in_flight"
+    assert manager_a._memory_store[record["quarantine_id"]]["replay_attempts"] == 1
+
+    # Fresh in_flight claims are NOT pending and NOT lease-expired, so
+    # Worker B's read finds nothing: no double claim, no double attempts.
+    claimed_b = manager_b._pending_for_replay(limit=10)
+    assert claimed_b == []
+    assert manager_a._memory_store[record["quarantine_id"]]["replay_attempts"] == 1
+
+    # Settling is CAS-guarded too: only a claim from in_flight applies.
+    # (A failed record would still be in_flight here, so this path is
+    # exercised via test_failed_record_cannot_be_flipped_back_to_replayed.)
+    assert manager_a._mark_replayed(record["quarantine_id"]) is True
+    assert manager_a._memory_store[record["quarantine_id"]]["status"] == "replayed"
+
+
+def test_failed_record_cannot_be_flipped_back_to_replayed():
+    manager = QuarantineManager(max_replay_attempts=1)
+    record = manager.add_to_quarantine({"location_id": 4946813}, "boom")
+
+    def failing(_data):
+        raise RuntimeError("still down")
+
+    manager.replay(failing)
+    assert manager._memory_store[record["quarantine_id"]]["status"] == "failed"
+
+    # A late "success" from another worker must not resurrect a parked record.
+    assert manager._mark_replayed(record["quarantine_id"]) is False
+    assert manager._memory_store[record["quarantine_id"]]["status"] == "failed"
+
+
+def test_stale_in_flight_claim_is_reclaimed_after_lease():
+    from datetime import timedelta
+
+    manager = QuarantineManager(claim_lease_seconds=10)
+    record = manager.add_to_quarantine({"location_id": 4946813}, "boom")
+    rid = record["quarantine_id"]
+
+    # A worker crashed mid-replay: claim is in_flight, fresh.
+    manager._update_record(rid, status="in_flight", in_flight_at=_utcnow())
+    assert manager._pending_for_replay(limit=10) == []
+
+    # The same claim older than the lease is reclaimed (retried).
+    stale = _utcnow() - timedelta(seconds=60)
+    manager._memory_store[rid]["in_flight_at"] = stale
+    claimed = manager._pending_for_replay(limit=10)
+    assert [rid_ for rid_, _ in claimed] == [rid]
+
+
+def _utcnow():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
 def test_replay_only_processes_pending_records():
     manager = QuarantineManager()
     engine = SelfHealingEngine(quarantine_manager=manager)

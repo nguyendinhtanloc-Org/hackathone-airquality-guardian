@@ -91,9 +91,12 @@ async def test_database_insert_failure_returns_degraded(
     assert result.status == "degraded"
     assert result.incident is not None
     assert result.incident.component == "database"
-    assert result.records_inserted == 0
-    assert result.records_failed == 3
     assert calls["n"] == 2
+    # A partial write really did store 1 record before the crash: report it
+    # rather than pretending nothing happened (dedup makes re-emitting safe).
+    assert result.records_inserted == 1
+    assert result.records_failed == 2
+    assert len(result.documents) == 1
 
 
 def _returning(payload):

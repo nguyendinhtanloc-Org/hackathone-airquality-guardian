@@ -186,6 +186,8 @@ async def test_main_replay_flag_skips_normal_run(monkeypatch):
 @pytest.mark.asyncio
 async def test_main_without_replay_runs_pipeline(monkeypatch):
     database = MagicMock()
+    database.quarantine_events = "the-collection"
+    database.quarantine_retention_days = 7
     fetcher = MagicMock()
     fetcher.fetch = AsyncMock(return_value={"results": []})
 

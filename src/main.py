@@ -24,7 +24,15 @@ from src.self_healing.quarantine import QuarantineManager
 
 load_dotenv()
 
-logger.add("logs/pipeline_{time}.log", rotation="1 day", level=os.getenv("LOG_LEVEL", "INFO"))
+# rotation renames per-day files; retention prunes old ones so the logs/
+# directory does not grow without bound on a long-running deployment.
+LOG_RETENTION_DAYS = int(os.getenv("LOG_RETENTION_DAYS", "14"))
+logger.add(
+    "logs/pipeline_{time}.log",
+    rotation="1 day",
+    retention=f"{LOG_RETENTION_DAYS} days",
+    level=os.getenv("LOG_LEVEL", "INFO"),
+)
 
 DEFAULT_LOCATION_ID = 4946813
 DEFAULT_REPLAY_LIMIT = 100
@@ -74,12 +82,30 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def build_pipeline(
     database: MongoDBClient,
 ) -> tuple[Pipeline, SelfHealingEngine]:
-    """Wire the fetcher, validator, database, and self-healing engine."""
+    """Wire the fetcher, validator, database, and self-healing engine.
+
+    The quarantine store is always wired to the real MongoDB collection.
+    Refusing to start (fail-fast) when it is missing guarantees the
+    production path can never fall back to the in-memory store, where
+    quarantined records would be lost on restart. The in-memory mode
+    remains available for dev/tests that build a manager directly.
+    """
+    quarantine_collection = database.quarantine_events
+    if quarantine_collection is None:
+        raise RuntimeError(
+            "Quarantine store is not wired to MongoDB; refusing to start "
+            "the pipeline without persistent quarantine."
+        )
     fetcher = DataFetcher()
     validator = DataValidator()
+    # Single source of truth: both write paths use the same retention
+    # (database.quarantine_retention_days, read from .env at construction).
+    # Previously the manager silently used its 30-day default while the DB
+    # layer used 7.
     self_healing_engine = SelfHealingEngine(
         quarantine_manager=QuarantineManager(
-            collection=database.quarantine_events,
+            collection=quarantine_collection,
+            retention_days=database.quarantine_retention_days,
         ),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
     )
@@ -124,6 +150,21 @@ async def replay_quarantined(
     return summary
 
 
+def prune_expired_quarantine(pipeline: Pipeline) -> None:
+    """Delete quarantined records past their retention TTL.
+
+    The manager's cleanup() is a bounded delete_many; running it before
+    every cycle keeps quarantine_events from growing without bound while
+    never taking the pipeline down with a failure of its own.
+    """
+    try:
+        deleted = pipeline.self_healing_engine.quarantine_manager.cleanup()
+        if deleted:
+            logger.info("Pruned {} expired quarantine record(s)", deleted)
+    except Exception:
+        logger.exception("Quarantine cleanup failed; continuing anyway.")
+
+
 async def run_cycle(
     database: MongoDBClient,
     datadog: DatadogIntegrator | None,
@@ -135,6 +176,7 @@ async def run_cycle(
     Used by both single-run mode and the scheduler so telemetry, logging
     and pipeline_status updates live in exactly one place.
     """
+    prune_expired_quarantine(pipeline)
     result = await pipeline.run_once({"location_id": location_id})
     if result.incident is not None:
         logger.error(

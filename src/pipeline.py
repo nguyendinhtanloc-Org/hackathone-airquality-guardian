@@ -53,7 +53,7 @@ class Pipeline:
         self.backoff_seconds = (
             backoff_seconds
             if backoff_seconds is not None
-            else float(os.getenv("RETRY_BACKOFF_SECONDS", "30"))
+            else float(os.getenv("RETRY_BACKOFF_SECONDS", "10"))
         )
 
     async def run_once(
@@ -148,6 +148,10 @@ class Pipeline:
                 component="database",
                 attempt=attempt,
             )
+            # Report what actually happened, not what was attempted: on a
+            # partial write the records already inserted are real and must
+            # be visible (they are also safe to re-emit on replay thanks to
+            # the dedup_key unique index).
             logger.error(
                 "Persistence failed after {} insert(s): {}",
                 len(inserted_documents),
@@ -156,11 +160,11 @@ class Pipeline:
             return PipelineRunResult(
                 location_id=location_id,
                 records_fetched=fetched_count,
-                records_valid=0,
-                records_inserted=0,
-                records_failed=fetched_count,
+                records_valid=len(inserted_documents),
+                records_inserted=len(inserted_documents),
+                records_failed=max(fetched_count - len(inserted_documents), 0),
                 duration_seconds=perf_counter() - started_at,
-                documents=(),
+                documents=tuple(inserted_documents),
                 incident=incident,
                 status="degraded",
                 attempts=attempt + 1,

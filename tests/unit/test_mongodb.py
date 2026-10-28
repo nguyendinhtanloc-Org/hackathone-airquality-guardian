@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from pymongo.errors import DuplicateKeyError
 
-from src.database.mongodb import MongoDBClien
+from src.database.mongodb import MongoDBClient
 
 
 @pytest.fixture
@@ -41,26 +41,41 @@ def _build_client(monkeypatch, data_retention_days: str):
     return MongoDBClient(database_name="test_airquality", client=client), collections
 
 
+
 def test_initialization_creates_required_indexes(mongo_client):
     _, _, collections = mongo_client
 
     indexes = collections["air_quality"].create_index.call_args_list
 
-    # Regular lookup indexes plus the unique dedup index.
     assert indexes[1] == call("metadata.location_id")
-    assert indexes[2] == call(
-        "dedup_key",
-        unique=True,
-        name="air_quality_dedup_idx",
-    )
 
-    # Quarantine indexes: claim/lease scan + per-cycle cleanup prune.
+    dedup_indexes = collections[
+        "air_quality_dedup"
+    ].create_index.call_args_list
+
+    assert call(
+        [("dedup_key", 1)],
+        unique=True,
+        name="air_quality_dedup_key_idx",
+    ) in dedup_indexes
+
+    assert call(
+        [("created_at", 1)],
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup_indexes
+
     q_indexes = collections["quarantine_events"].create_index.call_args_list
-    assert call([("status", 1), ("created_at", 1)], name="pending_quarantine_idx") in q_indexes
+
+    assert call(
+        [("status", 1), ("created_at", 1)],
+        name="pending_quarantine_idx",
+    ) in q_indexes
+
     assert call(
         [("status", 1), ("in_flight_at", 1)],
         name="in_flight_quarantine_idx",
     ) in q_indexes
+
     assert call("expires_at") in q_indexes
 
 

@@ -124,14 +124,17 @@ class MongoDBClient:
         else:
             self.air_quality.create_index("timestamp")
         self.air_quality.create_index("metadata.location_id")
-        self.air_quality.create_index(
-            "dedup_key",
+        # Time-series collections do not support this unique index.
+    # Enforce deduplication in a regular collection instead.
+        self.air_quality_dedup.create_index(
+            [("dedup_key", 1)],
             unique=True,
-            name="air_quality_dedup_idx",
+            name="air_quality_dedup_key_idx",
         )
 
         self.air_quality_dedup.create_index(
-            [("created_at", 1)]
+            [("created_at", 1)],
+            name="air_quality_dedup_created_at_idx",
         )
         self.quarantine_events.create_index(
             [("status", 1), ("created_at", 1)],
@@ -147,27 +150,42 @@ class MongoDBClient:
         # cleanup() prunes expired records each cycle.
         self.quarantine_events.create_index("expires_at")
 #đưa dữ liệu vào db, trả về id của bản ghi vừa được thêm vào, collection: air uality
+    
     def insert_air_quality(self, document: Mapping[str, Any]) -> Any:
-        """Insert one air-quality document and return its inserted ID.
-
-        Idempotent: the document carries a stable ``dedup_key`` (see
-        :meth:`_dedup_key`) backed by a unique index, so re-inserting an
-        already-stored observation (partial write, ``--replay``) is a
-        no-op that returns ``None`` instead of duplicating data.
-        """
+        """Insert a time-series observation with deduplication."""
         record = dict(document)
-
         metadata = record.get("metadata") or {}
         location_id = metadata.get("location_id")
 
         if location_id is not None:
             record.setdefault("station_id", location_id)
-        record["dedup_key"] = self._dedup_key(record)
+
+        dedup_key = self._dedup_key(record)
+        record["dedup_key"] = dedup_key
+
+        # The unique key lives in a regular collection because
+        # air_quality is a MongoDB time-series collection.
+        marker = {
+            "dedup_key": dedup_key,
+            "created_at": self._now(),
+            "station_id": record.get("station_id"),
+            "timestamp": record.get("timestamp"),
+        }
+
         try:
             result = self.air_quality.insert_one(record)
+            return result.inserted_id
         except DuplicateKeyError:
+            self.air_quality_dedup.delete_one(
+                {"dedup_key": dedup_key}
+            )
             return None
-        return result.inserted_id
+        except Exception:
+            self.air_quality_dedup.delete_one(
+                {"dedup_key": dedup_key}
+            )
+            raise
+
 #đưa dữ liệu vào db, trả về id của bản ghi vừa được thêm vào, collection: quarantine
     def insert_quarantine(
         self,

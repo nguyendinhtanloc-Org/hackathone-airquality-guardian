@@ -52,3 +52,7 @@ QuarantineManager là nơi duy nhất quản lý vòng đời quarantine: claim,
 MongoDBClient.query_pending_quarantine() có thể giữ để đọc, kiểm tra dữ liệu.
 
 MongoDBClient.mark_quarantine_replayed() và mark_quarantine_failed() không nên tiếp tục là một đường ghi trạng thái độc lập.
+
+
+
+CÒN 2.13 2.14 2.8 2.12 ( test ok nhưng không biết tiêu chí audit)

@@ -53,6 +53,36 @@ MongoDBClient.query_pending_quarantine() có thể giữ để đọc, kiểm tr
 
 MongoDBClient.mark_quarantine_replayed() và mark_quarantine_failed() không nên tiếp tục là một đường ghi trạng thái độc lập.
 
+7
 
+AUDIT BUG ẨN (29/10) — verify_live.py CHẠY THẬT TRÊN ATLAS: 5/5 OK
+
+Bằng chứng từ 2 lần chạy verify_live.py trên hạ tầng thật:
+
+- khởi động atlas KHÔNG CÒN crash code 72 (TTL time-series giờ meta-scoped,
+  commit 524c89c).
+- dedup marker-first đúng: run #1 inserted=5, run #2 inserted=1
+  skipped_dedup=5 (cùng quan sát -> marker chặn, không có record trùng).
+- metrics + logs Datadog được accept -> phần metrics/log của 2.11
+  đã xác nhận thật (còn DASHBOARD + 3 MONITORS chưa ai xác nhận).
+- ceiling CO 100->5000 µg/m³ (commit 59808d2): co=984.57 không còn bị drop.
+- suite: 147 passed (unit + e2e + integration).
+
+2 điểm ghi cho Người 2 (không chặn, chỉ theo dõi):
+
+a) CREDENTIALS THẬT ĐÃ BỊ COMMIT VÀO GIT HISTORY (PR #6, .env.example cũ).
+   Đã thay .env.example bằng placeholder (commit de4589e) nhưng KHÔNG xóa
+   được khỏi history -> BẮT BUỘC xoay password Atlas (đổi MONGODB_URI trong
+   .env theo) trước khi demo/submit.
+
+b) GIỚI HẠN THIẾT KẾ TTL vs DEDUP TRÊN DATA CŨ: cảm biến CO của
+   4946813 trả latest = 2026-04-24 (~6 tháng cũ). TTL air_quality key
+   theo timestamp (30 ngày) nên có thể xóa document CO, trong khi marker
+   dedup key theo created_at còn sống -> chu kỳ sau vẫn skip CO dù data
+   đã mất. Chỉ xảy ra với cảm biến trả data cũ; data tươi thì 2 horizon
+   trùng nhau nên không ảnh hưởng. Nếu trạm đổi cảm biến/CO cập nhật
+   lại, hiện tượng tự hết. Đề xuất: không fix trước deadline; đưa vào
+   2.14 (docs) làm known limitation, hoặc cân nhắc key marker theo
+   observation timestamp thay vì created_at (bản thảo, chưa làm).
 
 CÒN 2.13 2.14 2.8 2.12 ( test ok nhưng không biết tiêu chí audit)

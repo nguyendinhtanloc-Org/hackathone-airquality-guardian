@@ -86,7 +86,57 @@ class MongoDBClient:
         self.pipeline_status: Collection[dict[str, Any]] = self.database[
             self.PIPELINE_STATUS_COLLECTION
         ]
+        # If air_quality is a time-series collection (2.10, as created on
+        # Atlas), the server REJECTS a plain TTL index on the timeField.
+        # A TTL on a time-series collection that has a metaField must be
+        # scoped to one meta value via partialFilterExpression. Detect the
+        # actual layout up front so index creation below issues a command
+        # the server accepts instead of crashing startup.
+        (
+            self._air_quality_is_timeseries,
+            self._air_quality_meta_field,
+        ) = self._detect_air_quality_timeseries()
         self._create_indexes()
+
+    def _detect_air_quality_timeseries(self) -> tuple[bool, str | None]:
+        """Return (is_time_series, meta_field) for air_quality.
+
+        Best-effort: if the server will not answer listCollections we fall
+        back to the regular-collection layout (indexes as before) instead
+        of blocking startup.
+        """
+        try:
+            info = next(
+                self.database.list_collections(
+                    filter={"name": self.AIR_QUALITY_COLLECTION}
+                ),
+                None,
+            )
+        except Exception:
+            return False, None
+        # Guard: real descriptors are dicts; mocks/None/other types fall to
+        # the regular-collection path so tests with MagicMock databases keep
+        # their original index-creation assertions intact.
+        if not isinstance(info, Mapping):
+            return False, None
+        timeseries = (info.get("options") or {}).get("timeseries")
+        if not timeseries:
+            return False, None
+        return True, timeseries.get("metaField")
+
+    @staticmethod
+    def _ttl_meta_value() -> Any:
+        """Meta value the time-series TTL reaps.
+
+        A meta-scoped TTL index only applies to documents of that meta
+        value, and the pipeline monitors a single location by default, so
+        the value is configured (AIR_QUALITY_TTL_META) instead of guessed.
+        """
+        raw = os.getenv("AIR_QUALITY_TTL_META", "4946813")
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
     def _now(self) -> datetime:
         """Return the current UTC time."""
         return datetime.now(timezone.utc)
@@ -114,16 +164,33 @@ class MongoDBClient:
 
     def _create_indexes(self) -> None:
         if self.data_retention_days > 0:
-            # TTL index: MongoDB's background reaper deletes documents whose
-            # timestamp is older than the expiry, which is what keeps
-            # air_quality from growing without bound.
-            self.air_quality.create_index(
-                "timestamp",
-                expireAfterSeconds=self.data_retention_days * 86400,
-            )
+            if self._air_quality_is_timeseries and self._air_quality_meta_field:
+                # A TTL on a time-series collection requires a
+                # partialFilterExpression on the metaField; index the
+                # monitored meta value so the reaper actually prunes.
+                self.air_quality.create_index(
+                    "timestamp",
+                    expireAfterSeconds=self.data_retention_days * 86400,
+                    name="air_quality_ttl_idx",
+                    partialFilterExpression={
+                        self._air_quality_meta_field: self._ttl_meta_value()
+                    },
+                )
+            else:
+                # TTL index: MongoDB's background reaper deletes documents
+                # whose timestamp is older than the expiry, which is what
+                # keeps air_quality from growing without bound.
+                self.air_quality.create_index(
+                    "timestamp",
+                    expireAfterSeconds=self.data_retention_days * 86400,
+                )
         else:
             self.air_quality.create_index("timestamp")
-        self.air_quality.create_index("metadata.location_id")
+        if not self._air_quality_is_timeseries:
+            # A time-series collection may only be indexed on its
+            # time/meta fields (the control indexes cover lookups), so the
+            # regular meta index is created only for a regular collection.
+            self.air_quality.create_index("metadata.location_id")
         # Time-series collections do not support this unique index.
     # Enforce deduplication in a regular collection instead.
         self.air_quality_dedup.create_index(

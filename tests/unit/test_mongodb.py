@@ -108,6 +108,71 @@ def test_dedup_store_gets_ttl_aligned_to_data_retention(monkeypatch):
         name="air_quality_dedup_created_at_idx",
     ) in dedup
 
+def test_timeseries_layout_gets_meta_scoped_ttl_and_no_meta_index(monkeypatch):
+    # Regression: Atlas rejects a PLAIN TTL index on a time-series
+    # collection ("TTL indexes on time-series collections require a
+    # partialFilterExpression on the metaField") -> startup crash. With a
+    # detected time-series layout the code must issue the meta-scoped
+    # command and skip the non-time/meta index.
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database.list_collections.side_effect = lambda **_kw: iter(
+        [{"name": "air_quality", "type": "timeseries",
+          "options": {"timeseries": {
+              "timeField": "timestamp",
+              "metaField": "metadata.location_id",
+          }}}]
+    )
+
+    from src.database.mongodb import MongoDBClient
+    MongoDBClient(database_name="test_airquality", client=client)
+
+    calls = collections["air_quality"].create_index.call_args_list
+    assert call(
+        "timestamp",
+        expireAfterSeconds=30 * 86400,
+        name="air_quality_ttl_idx",
+        partialFilterExpression={"metadata.location_id": 4946813},
+    ) in calls
+    # non-time/meta indexes are not issued on a time-series collection
+    assert call("metadata.location_id") not in calls
+
+
+def test_regular_layout_ignores_timeseries_detection(monkeypatch):
+    # listCollections says it is a regular collection -> the plain TTL
+    # index path is taken exactly as before the detection was added.
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database.list_collections.side_effect = lambda **_kw: iter(
+        [{"name": "air_quality", "type": "collection"}]
+    )
+
+    from src.database.mongodb import MongoDBClient
+    MongoDBClient(database_name="test_airquality", client=client)
+
+    calls = collections["air_quality"].create_index.call_args_list
+    assert call("timestamp", expireAfterSeconds=30 * 86400) in calls
+    assert call("metadata.location_id") in calls
+
+
 def test_dedup_store_plain_index_when_data_kept_forever(monkeypatch):
     _, collections = _build_client(monkeypatch, "0")
     dedup = collections["air_quality_dedup"].create_index.call_args_list

@@ -67,6 +67,17 @@ class _FakeAirQuality:
         self.documents.append(doc)
         return SimpleNamespace(inserted_id=uuid.uuid4())
 
+    def delete_one(self, filters: dict) -> SimpleNamespace:
+        # Rollback semantic: remove the doc and free its dedup_key so a
+        # rolled-back marker can be re-asserted on the next attempt.
+        key = filters.get("dedup_key")
+        for doc in list(self.documents):
+            if doc.get("dedup_key") == key:
+                self.documents.remove(doc)
+                self._dedup_keys.discard(key)
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
     def find(self, filters: dict | None = None):
         filters = filters or {}
         docs = [

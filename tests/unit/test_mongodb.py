@@ -59,8 +59,11 @@ def test_initialization_creates_required_indexes(mongo_client):
         name="air_quality_dedup_key_idx",
     ) in dedup_indexes
 
+    # Default DATA_RETENTION_DAYS=30 -> the dedup store gets a TTL index so
+    # it cannot outlive (or outgrow) the observations it deduplicates.
     assert call(
-        [("created_at", 1)],
+        "created_at",
+        expireAfterSeconds=30 * 86400,
         name="air_quality_dedup_created_at_idx",
     ) in dedup_indexes
 
@@ -92,6 +95,28 @@ def test_data_retention_zero_creates_plain_timestamp_index(monkeypatch):
     _, collections = _build_client(monkeypatch, "0")
     indexes = collections["air_quality"].create_index.call_args_list
     assert indexes[0] == call("timestamp")
+
+
+def test_dedup_store_gets_ttl_aligned_to_data_retention(monkeypatch):
+    # With retention, the dedup marker store reaps on the same horizon as
+    # the data it dedups, instead of accumulating forever.
+    _, collections = _build_client(monkeypatch, "30")
+    dedup = collections["air_quality_dedup"].create_index.call_args_list
+    assert call(
+        "created_at",
+        expireAfterSeconds=30 * 86400,
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup
+
+def test_dedup_store_plain_index_when_data_kept_forever(monkeypatch):
+    _, collections = _build_client(monkeypatch, "0")
+    dedup = collections["air_quality_dedup"].create_index.call_args_list
+    assert call(
+        [("created_at", 1)],
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup
+    for c in dedup:
+        assert c.kwargs.get("expireAfterSeconds") is None or c.args[0] != "created_at"
 
 
 def test_explicit_data_retention_days_param_wins_over_env(monkeypatch):

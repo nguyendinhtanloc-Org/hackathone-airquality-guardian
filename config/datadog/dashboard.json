@@ -1,6 +1,6 @@
 {
   "title": "AirQuality Guardian - Pipeline Health",
-  "description": "Pipeline, self-healing, AQI, and log overview.",
+  "description": "Pipeline, self-healing, and AQI overview.",
   "layout_type": "ordered",
   "widgets": [
     {
@@ -53,28 +53,6 @@
           }
         ],
         "autoscale": true
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "Pipeline logs",
-        "requests": [
-          {
-            "response_format": "event_list",
-            "query": {
-              "data_source": "logs",
-              "query": "service:airquality-pipeline",
-              "indexes": [
-                "*"
-              ],
-              "compute": {
-                "aggregation": "count"
-              },
-              "group_by": []
-            }
-          }
-        ]
       }
     }
   ]

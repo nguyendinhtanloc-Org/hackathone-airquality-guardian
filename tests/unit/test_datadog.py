@@ -153,8 +153,10 @@ def test_api_failures_are_not_silenced(datadog):
         integrator.send_metrics({"pipeline.records.valid": 12})
 
 
+
 def test_dashboard_and_monitor_templates_are_valid_api_payloads():
     project_root = Path(__file__).resolve().parents[2]
+
     dashboard = json.loads(
         (project_root / "config" / "datadog" / "dashboard.json").read_text(
             encoding="utf-8"
@@ -167,8 +169,14 @@ def test_dashboard_and_monitor_templates_are_valid_api_payloads():
     )
 
     assert dashboard["layout_type"] == "ordered"
-    assert len(dashboard["widgets"]) == 4
-    assert dashboard["widgets"][-1]["definition"]["type"] == "list_stream"
+    assert len(dashboard["widgets"]) == 3
+
+    widget_types = [
+        widget["definition"]["type"]
+        for widget in dashboard["widgets"]
+    ]
+    assert widget_types == ["timeseries", "timeseries", "query_value"]
+
     assert len(monitors) == 3
     assert all(
         {"name", "type", "query", "message", "options"} <= monitor.keys()

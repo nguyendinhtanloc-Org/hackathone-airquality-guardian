@@ -188,6 +188,7 @@ def build_database() -> tuple[MongoDBClient, dict]:
         __getitem__=lambda self=None, *args: None,
     )
     air_quality = _FakeAirQuality()
+    air_quality_dedup = _FakeAirQuality()
     quarantine = _FakeQuarantine()
     status = _FakePipelineStatus()
 
@@ -195,6 +196,7 @@ def build_database() -> tuple[MongoDBClient, dict]:
         def __getitem__(self, name: str):
             return {
                 "air_quality": air_quality,
+                "air_quality_dedup": air_quality_dedup,
                 "quarantine_events": quarantine,
                 "pipeline_status": status,
             }[name]

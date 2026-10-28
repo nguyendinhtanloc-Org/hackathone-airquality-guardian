@@ -14,6 +14,7 @@ def mongo_client():
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -33,9 +34,12 @@ def _build_client(monkeypatch, data_retention_days: str):
         "air_quality": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+
     }
     database.__getitem__.side_effect = collections.__getitem__
     return MongoDBClient(database_name="test_airquality", client=client), collections
+
 
 
 def test_initialization_creates_required_indexes(mongo_client):
@@ -43,21 +47,35 @@ def test_initialization_creates_required_indexes(mongo_client):
 
     indexes = collections["air_quality"].create_index.call_args_list
 
-    # Regular lookup indexes plus the unique dedup index.
     assert indexes[1] == call("metadata.location_id")
-    assert indexes[2] == call(
-        "dedup_key",
-        unique=True,
-        name="air_quality_dedup_idx",
-    )
 
-    # Quarantine indexes: claim/lease scan + per-cycle cleanup prune.
+    dedup_indexes = collections[
+        "air_quality_dedup"
+    ].create_index.call_args_list
+
+    assert call(
+        [("dedup_key", 1)],
+        unique=True,
+        name="air_quality_dedup_key_idx",
+    ) in dedup_indexes
+
+    assert call(
+        [("created_at", 1)],
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup_indexes
+
     q_indexes = collections["quarantine_events"].create_index.call_args_list
-    assert call([("status", 1), ("created_at", 1)], name="pending_quarantine_idx") in q_indexes
+
+    assert call(
+        [("status", 1), ("created_at", 1)],
+        name="pending_quarantine_idx",
+    ) in q_indexes
+
     assert call(
         [("status", 1), ("in_flight_at", 1)],
         name="in_flight_quarantine_idx",
     ) in q_indexes
+
     assert call("expires_at") in q_indexes
 
 
@@ -83,6 +101,7 @@ def test_explicit_data_retention_days_param_wins_over_env(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -104,6 +123,7 @@ def test_negative_data_retention_days_rejected(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -124,6 +144,7 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -200,6 +221,7 @@ def _bare_database_client() -> tuple:
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -226,6 +248,7 @@ def test_quarantine_retention_days_explicit_wins_over_env(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -244,6 +267,7 @@ def test_quarantine_retention_days_must_be_positive():
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }

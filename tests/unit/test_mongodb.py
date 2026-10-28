@@ -207,12 +207,41 @@ def test_insert_air_quality_is_idempotent_on_duplicate(mongo_client):
         "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
         "measurements": {"pm25": 12.5},
     }
-    collections["air_quality"].insert_one.side_effect = DuplicateKeyError(
-        "duplicate"
+    # Marker-first dedup: the gate is the unique index on air_quality_dedup.
+    # A re-emitted observation collides on the marker, so the time-series
+    # collection is never touched and the call is a no-op.
+    collections["air_quality_dedup"].insert_one.side_effect = (
+        DuplicateKeyError("duplicate")
     )
 
-    # No raise, no crash: a re-inserted observation is a no-op.
     assert database_client.insert_air_quality(document) is None
+    collections["air_quality"].insert_one.assert_not_called()
+
+
+def test_insert_air_quality_rolls_back_marker_when_time_series_fails(
+    mongo_client,
+):
+    """If the observation write fails, the marker is rolled back so the
+    next cycle can retry instead of being permanently blocked."""
+    database_client, _, collections = mongo_client
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    collections["air_quality"].insert_one.side_effect = RuntimeError(
+        "time-series down"
+    )
+    dedup_inserted = collections["air_quality_dedup"].insert_one
+
+    with pytest.raises(RuntimeError, match="time-series down"):
+        database_client.insert_air_quality(document)
+
+    dedup_inserted.assert_called_once()
+    marker = dedup_inserted.call_args.args[0]
+    rolled_back = collections["air_quality_dedup"].delete_one.call_args.args[0]
+    # The marker that was just inserted is the one rolled back, by key.
+    assert rolled_back == {"dedup_key": marker["dedup_key"]}
 
 
 def _bare_database_client() -> tuple:

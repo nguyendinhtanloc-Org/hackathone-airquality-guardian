@@ -24,6 +24,18 @@ if str(ROOT) not in sys.path:
 
 from dotenv import load_dotenv  # noqa: E402
 
+# macOS venvs frequently have no CA bundle the stdlib ssl module will trust,
+# so pymongo fails Atlas connections with CERTIFICATE_VERIFY_FAILED even
+# though curl/openssl (system trust store) work. Point OpenSSL at certifi's
+# bundle (a hard dependency of httpx/requests, so always present here).
+if not os.environ.get("SSL_CERT_FILE"):
+    try:
+        import certifi
+
+        os.environ["SSL_CERT_FILE"] = certifi.where()
+    except ImportError:
+        pass
+
 PASS, FAIL, WARN = "OK", "FAIL", "WARN"
 results: list[tuple[str, str, str]] = []
 

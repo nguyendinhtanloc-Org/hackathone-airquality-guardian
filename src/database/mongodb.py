@@ -132,10 +132,22 @@ class MongoDBClient:
             name="air_quality_dedup_key_idx",
         )
 
-        self.air_quality_dedup.create_index(
-            [("created_at", 1)],
-            name="air_quality_dedup_created_at_idx",
-        )
+        # Markers are written per observation and otherwise never deleted
+        # (air_quality's TTL reaper cannot touch a separate collection), so
+        # the dedup store would grow without bound on a long-running
+        # deployment. Align its TTL with the observations it dedups: same
+        # horizon, 0 = keep forever (plain index, mirrors air_quality).
+        if self.data_retention_days > 0:
+            self.air_quality_dedup.create_index(
+                "created_at",
+                expireAfterSeconds=self.data_retention_days * 86400,
+                name="air_quality_dedup_created_at_idx",
+            )
+        else:
+            self.air_quality_dedup.create_index(
+                [("created_at", 1)],
+                name="air_quality_dedup_created_at_idx",
+            )
         self.quarantine_events.create_index(
             [("status", 1), ("created_at", 1)],
             name="pending_quarantine_idx",

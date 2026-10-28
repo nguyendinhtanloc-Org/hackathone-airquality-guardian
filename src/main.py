@@ -187,11 +187,12 @@ async def run_cycle(
         )
     logger.info(
         "Pipeline run complete: location_id={} fetched={} valid={} "
-        "inserted={} failed={} duration_seconds={:.2f}",
+        "inserted={} skipped_dedup={} failed={} duration_seconds={:.2f}",
         result.location_id,
         result.records_fetched,
         result.records_valid,
         result.records_inserted,
+        result.records_skipped,
         result.records_failed,
         result.duration_seconds,
     )
@@ -213,6 +214,7 @@ async def run_cycle(
         "pipeline.records.fetched": result.records_fetched,
         "pipeline.records.valid": result.records_valid,
         "pipeline.records.inserted": result.records_inserted,
+        "pipeline.records.skipped_dedup": result.records_skipped,
         "pipeline.records.failed": result.records_failed,
         "pipeline.fetch.latency": result.duration_seconds,
         "pipeline.incidents.count": len(incidents),

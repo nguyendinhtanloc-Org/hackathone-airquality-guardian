@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from pymongo.errors import DuplicateKeyError
 
-from src.database.mongodb import MongoDBClient
+from src.database.mongodb import MongoDBClien
 
 
 @pytest.fixture
@@ -14,6 +14,7 @@ def mongo_client():
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -33,6 +34,8 @@ def _build_client(monkeypatch, data_retention_days: str):
         "air_quality": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+
     }
     database.__getitem__.side_effect = collections.__getitem__
     return MongoDBClient(database_name="test_airquality", client=client), collections
@@ -83,6 +86,7 @@ def test_explicit_data_retention_days_param_wins_over_env(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -104,6 +108,7 @@ def test_negative_data_retention_days_rejected(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -124,6 +129,7 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -200,6 +206,7 @@ def _bare_database_client() -> tuple:
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -226,6 +233,7 @@ def test_quarantine_retention_days_explicit_wins_over_env(monkeypatch):
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -244,6 +252,7 @@ def test_quarantine_retention_days_must_be_positive():
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }

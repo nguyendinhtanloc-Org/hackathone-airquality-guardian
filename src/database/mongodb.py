@@ -21,6 +21,8 @@ class MongoDBClient:
     QUARANTINE_COLLECTION = "quarantine_events"
     PIPELINE_STATUS_COLLECTION = "pipeline_status"
     PIPELINE_STATUSES = {"running", "degraded", "stopped"}
+    DEDUP_COLLECTION = "air_quality_dedup"
+
 
     def __init__(
         self,
@@ -75,6 +77,9 @@ class MongoDBClient:
         self.air_quality: Collection[dict[str, Any]] = self.database[
             self.AIR_QUALITY_COLLECTION
         ]
+        self.air_quality_dedup = self.database[
+            self.DEDUP_COLLECTION
+        ]
         self.quarantine_events: Collection[dict[str, Any]] = self.database[
             self.QUARANTINE_COLLECTION
         ]
@@ -124,6 +129,10 @@ class MongoDBClient:
             unique=True,
             name="air_quality_dedup_idx",
         )
+
+        self.air_quality_dedup.create_index(
+            [("created_at", 1)]
+        )
         self.quarantine_events.create_index(
             [("status", 1), ("created_at", 1)],
             name="pending_quarantine_idx",
@@ -147,6 +156,12 @@ class MongoDBClient:
         no-op that returns ``None`` instead of duplicating data.
         """
         record = dict(document)
+
+        metadata = record.get("metadata") or {}
+        location_id = metadata.get("location_id")
+
+        if location_id is not None:
+            record.setdefault("station_id", location_id)
         record["dedup_key"] = self._dedup_key(record)
         try:
             result = self.air_quality.insert_one(record)

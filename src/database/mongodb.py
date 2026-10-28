@@ -164,27 +164,32 @@ class MongoDBClient:
         record["dedup_key"] = dedup_key
 
         # The unique key lives in a regular collection because
-        # air_quality is a MongoDB time-series collection.
+        # air_quality is a MongoDB time-series collection (which cannot
+        # carry a unique index). marker-first dedup:
+        #   1. insert the marker -> the unique index on air_quality_dedup
+        #      is the actual gate that stops a re-emitted or replayed
+        #      observation from duplicating data.
+        #   2. insert the observation into the time-series collection.
+        #   3. if the time-series write fails, roll the marker back so the
+        #      next cycle can retry instead of being silently blocked.
         marker = {
             "dedup_key": dedup_key,
             "created_at": self._now(),
             "station_id": record.get("station_id"),
             "timestamp": record.get("timestamp"),
         }
+        try:
+            self.air_quality_dedup.insert_one(marker)
+        except DuplicateKeyError:
+            # Observation already stored -> idempotent no-op.
+            return None
 
         try:
             result = self.air_quality.insert_one(record)
-            return result.inserted_id
-        except DuplicateKeyError:
-            self.air_quality_dedup.delete_one(
-                {"dedup_key": dedup_key}
-            )
-            return None
         except Exception:
-            self.air_quality_dedup.delete_one(
-                {"dedup_key": dedup_key}
-            )
+            self.air_quality_dedup.delete_one({"dedup_key": dedup_key})
             raise
+        return result.inserted_id
 
 #đưa dữ liệu vào db, trả về id của bản ghi vừa được thêm vào, collection: quarantine
     def insert_quarantine(

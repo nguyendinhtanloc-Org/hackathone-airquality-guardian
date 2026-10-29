@@ -7,8 +7,10 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
+
+from typing import Any
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -16,6 +18,7 @@ from loguru import logger
 from src.fetcher.fetcher import DataFetcher
 from src.validation.validator import DataValidator
 from src.aqi.calculator import AQICalculator
+from src.models.sensor_data import Measurement
 from src.database.mongodb import MongoDBClient
 from src.datadog.integrator import DatadogIntegrator
 from src.pipeline import Pipeline, PipelineRunResult
@@ -36,6 +39,7 @@ logger.add(
 
 DEFAULT_LOCATION_ID = 4946813
 DEFAULT_REPLAY_LIMIT = 100
+DEFAULT_REPORT_LIMIT = 100
 
 # 2.12 runtime monitor: created on demand the first time the pipeline hits
 # an incident, so a fresh environment alerts without waiting for a manual
@@ -112,6 +116,20 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "(default 300) until stopped with SIGTERM/SIGINT. "
             "For deployment; a single run is the default."
         ),
+    )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help=(
+            "Print an AQI summary table from the stored data and exit "
+            "(no fetch, no pipeline cycle)."
+        ),
+    )
+    parser.add_argument(
+        "--report-limit",
+        type=int,
+        default=DEFAULT_REPORT_LIMIT,
+        help="How many stored air-quality records to summarise with --report.",
     )
     return parser.parse_args(
         list(argv) if argv is not None else sys.argv[1:]
@@ -218,6 +236,135 @@ def prune_expired_quarantine(pipeline: Pipeline) -> None:
             logger.info("Pruned {} expired quarantine record(s)", deleted)
     except Exception:
         logger.exception("Quarantine cleanup failed; continuing anyway.")
+
+
+def _measurements_from_document(document: Mapping[str, Any]) -> list[Measurement]:
+    """Rebuild Measurement objects from a stored air_quality document.
+
+    The stored measurements dict maps ``<param> -> value`` and
+    ``<param>_unit -> unit``; keys ending in ``_unit`` are skipped.
+    """
+    raw = document.get("measurements") or {}
+    measurements: list[Measurement] = []
+    for key, value in raw.items():
+        if key.endswith("_unit"):
+            continue
+        measurements.append(
+            Measurement(
+                parameter=key,
+                value=float(value),
+                unit=str(raw.get(f"{key}_unit", "")),
+            )
+        )
+    return measurements
+
+
+def build_aqi_report(
+    database: MongoDBClient,
+    location_id: int,
+    limit: int,
+) -> dict[str, Any]:
+    """Summarise stored AQI for one location (no fetch, no cycle).
+
+    'current' is the newest stored document broken down per pollutant via
+    calculate_all; 'history' is the retention-window avg/min/max from
+    aggregate_aqi.
+    """
+    filters = {"metadata.location_id": location_id}
+    documents = database.query_air_quality(filters, limit=limit)
+
+    calculator = AQICalculator()
+    current: dict[str, Any] | None = None
+    per_pollutant: list[dict[str, Any]] = []
+    if documents:
+        summary = calculator.calculate_all(
+            _measurements_from_document(documents[0])
+        )
+        level = summary.get("level") or {}
+        current = {
+            "timestamp": documents[0].get("timestamp"),
+            "primary_pollutant": summary.get("primary_pollutant"),
+            "aqi": summary.get("aqi"),
+            "level": level,
+        }
+        for parameter, info in (summary.get("all") or {}).items():
+            per_pollutant.append(
+                {
+                    "parameter": parameter,
+                    "value": info.get("value"),
+                    "unit": info.get("unit", ""),
+                    "aqi": info.get("aqi"),
+                    "level": calculator.get_level(info.get("aqi")),
+                }
+            )
+
+    history = [
+        {
+            "location_id": row.get("_id"),
+            "average_aqi": row.get("average_aqi"),
+            "min_aqi": row.get("min_aqi"),
+            "max_aqi": row.get("max_aqi"),
+            "records": row.get("records"),
+        }
+        for row in database.aggregate_aqi(filters)
+    ]
+    return {
+        "location_id": location_id,
+        "current": current,
+        "per_pollutant": per_pollutant,
+        "history": history,
+    }
+
+
+def _fmt_num(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def format_aqi_report(report: Mapping[str, Any]) -> str:
+    """Render an AQI report as an aligned text table."""
+    location_id = report.get("location_id")
+    current = report.get("current")
+    lines = [f"AQI report - location {location_id}"]
+    if current is None:
+        lines.append("(no stored air-quality data)")
+        return "\n".join(lines)
+
+    timestamp = current.get("timestamp")
+    ts = timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp
+    level = current.get("level") or {}
+    lines += [
+        "",
+        "Current (newest reading)",
+        f"  primary pollutant : {current.get('primary_pollutant')}",
+        f"  overall AQI       : {current.get('aqi')}",
+        f"  level             : {level.get('level')} - {level.get('description', '')} [{level.get('color', '')}]",
+    ]
+
+    per_pollutant = report.get("per_pollutant") or []
+    if per_pollutant:
+        lines += ["", "  pollutant      value     aqi   level"]
+        for p in per_pollutant:
+            lv = p.get("level") or {}
+            lines.append(
+                f"  {p.get('parameter', ''):<8} {_fmt_num(p.get('value')):>8}  "
+                f"{_fmt_num(p.get('aqi')):>5}  {lv.get('level', '')} ({p.get('unit', '')})"
+            )
+
+    history = report.get("history") or []
+    if history:
+        lines += ["", "Stored window (avg/min/max over retention period)"]
+        lines.append(f"  location  avg    min    max  records")
+        for row in history:
+            lines.append(
+                f"  {row.get('location_id', ''):>8}  {_fmt_num(row.get('average_aqi')):>5}  "
+                f"{_fmt_num(row.get('min_aqi')):>5}  {_fmt_num(row.get('max_aqi')):>5}  "
+                f"{_fmt_num(row.get('records'))}"
+            )
+    return "\n".join(lines)
 
 
 async def run_cycle(
@@ -472,27 +619,38 @@ async def main(argv: Sequence[str] | None = None) -> None:
     logger.info("MongoDB database: {}", database.database.name)
     logger.info("MongoDB collection: {}", database.air_quality.name)
     logger.info("MongoDB ping: {}", database.client.admin.command("ping"))
-    datadog = (
-        DatadogIntegrator()
-        if os.getenv("DATADOG_API_KEY")
-        else None
-    )
-    pipeline, self_healing_engine = build_pipeline(database)
     try:
-        if args.replay:
-            await replay_quarantined(
-                pipeline,
-                self_healing_engine,
-                limit=args.replay_limit,
+        if args.report:
+            # Read-only summary of what is already stored: no fetch, no
+            # pipeline cycle, no Datadog. Print and exit.
+            report = build_aqi_report(
+                database, args.location_id, args.report_limit
             )
+            print(format_aqi_report(report))
             return
-        if args.loop:
-            await run_loop(database, datadog, pipeline, args.location_id)
-        else:
-            await run_cycle(database, datadog, pipeline, args.location_id)
+
+        datadog = (
+            DatadogIntegrator()
+            if os.getenv("DATADOG_API_KEY")
+            else None
+        )
+        pipeline, self_healing_engine = build_pipeline(database)
+        try:
+            if args.replay:
+                await replay_quarantined(
+                    pipeline,
+                    self_healing_engine,
+                    limit=args.replay_limit,
+                )
+                return
+            if args.loop:
+                await run_loop(database, datadog, pipeline, args.location_id)
+            else:
+                await run_cycle(database, datadog, pipeline, args.location_id)
+        finally:
+            if datadog is not None:
+                datadog.close()
     finally:
-        if datadog is not None:
-            datadog.close()
         database.close()
 
 

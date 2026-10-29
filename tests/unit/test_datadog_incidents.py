@@ -137,6 +137,49 @@ async def test_cycle_with_incident_sends_error_logs():
 
 
 @pytest.mark.asyncio
+async def test_cycle_with_incident_ensures_degraded_monitor():
+    """2.12: an incident cycle makes sure the pipeline-degraded monitor
+    exists (ensure-once), so a fresh environment alerts on its own."""
+    database = MagicMock()
+    datadog = MagicMock()
+    incident = make_incident()
+    pipeline = MagicMock()
+    pipeline.run_once = AsyncMock(
+        return_value=make_result(status="degraded", incident=incident)
+    )
+    pipeline.self_healing_engine.incidents = [incident]
+
+    await pipeline_main.run_cycle(database, datadog, pipeline, 4946813)
+
+    datadog.ensure_monitor.assert_called_once()
+    monitor_name, template = datadog.ensure_monitor.call_args.args
+    assert monitor_name == pipeline_main.DEGRADED_MONITOR_NAME
+    assert template["query"] == "sum(last_5m):sum:pipeline.records.failed{*} > 0"
+
+
+@pytest.mark.asyncio
+async def test_healthy_cycle_does_not_touch_monitors():
+    database = MagicMock()
+    datadog = MagicMock()
+    pipeline = MagicMock()
+    pipeline.run_once = AsyncMock(return_value=make_result(status="running"))
+    pipeline.self_healing_engine.incidents = []
+
+    await pipeline_main.run_cycle(database, datadog, pipeline, 4946813)
+
+    datadog.ensure_monitor.assert_not_called()
+
+
+def test_ensure_degraded_monitor_swallow_datadog_outage():
+    """A broken Datadog must never take the pipeline down: the ensure
+    step logs and swallows, per the 'telemetry is best-effort' rule."""
+    datadog = MagicMock()
+    datadog.ensure_monitor.side_effect = RuntimeError("intake down")
+
+    pipeline_main.ensure_degraded_monitor(datadog)  # must not raise
+
+
+@pytest.mark.asyncio
 async def test_datadog_failure_does_not_break_the_cycle():
     database = MagicMock()
     datadog = MagicMock()

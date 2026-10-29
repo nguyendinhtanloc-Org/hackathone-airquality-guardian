@@ -143,6 +143,51 @@ def test_create_monitor_rejects_incomplete_payload(datadog):
     http_client.post.assert_not_called()
 
 
+def _list_response(http_client, monitors):
+    http_client.get.return_value.json.return_value = monitors
+    http_client.get.return_value.raise_for_status.return_value = None
+
+
+def test_ensure_monitor_creates_when_missing(datadog):
+    integrator, http_client = datadog
+    _list_response(http_client, [])
+    http_client.post.return_value.json.return_value = {"id": 99}
+    template = {
+        "name": "Pipeline degraded",
+        "type": "query alert",
+        "query": "sum(last_5m):sum:pipeline.records.failed{*} > 0",
+        "message": "Check the pipeline.",
+        "options": {"thresholds": {"critical": 0}},
+    }
+
+    assert integrator.ensure_monitor("Pipeline degraded", template) == 99
+    http_client.post.assert_called_once()
+
+
+def test_ensure_monitor_is_noop_when_it_already_exists(datadog):
+    integrator, http_client = datadog
+    _list_response(http_client, [{"id": 7, "name": "Pipeline degraded"}])
+
+    assert integrator.ensure_monitor("Pipeline degraded", {}) == 7
+    http_client.post.assert_not_called()
+
+
+def test_ensure_monitor_looks_up_by_name(datadog):
+    integrator, http_client = datadog
+    _list_response(http_client, [])
+    http_client.post.return_value.json.return_value = {"id": 1}
+
+    integrator.ensure_monitor(
+        "AirQuality Guardian: pipeline degraded",
+        {"name": "x", "type": "t", "query": "q", "message": "m", "options": {}},
+    )
+
+    get_args, get_kwargs = http_client.get.call_args
+    assert get_args[0] == "/api/v1/monitor"
+    assert get_kwargs["params"]["name"] == "AirQuality Guardian: pipeline degraded"
+    assert "DD-APPLICATION-KEY" in get_kwargs["headers"]
+
+
 def test_api_failures_are_not_silenced(datadog):
     integrator, http_client = datadog
     http_client.post.return_value.raise_for_status.side_effect = RuntimeError(

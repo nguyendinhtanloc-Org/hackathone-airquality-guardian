@@ -37,6 +37,45 @@ logger.add(
 DEFAULT_LOCATION_ID = 4946813
 DEFAULT_REPLAY_LIMIT = 100
 
+# 2.12 runtime monitor: created on demand the first time the pipeline hits
+# an incident, so a fresh environment alerts without waiting for a manual
+# ``apply_datadog.py`` run. Same template as config/datadog/monitors.json
+# ("pipeline degraded"): it fires on pipeline.records.failed > 0 and
+# auto-resolves natively when failures stop — no manual resolve needed.
+DEGRADED_MONITOR_NAME = "AirQuality Guardian: pipeline degraded"
+DEGRADED_MONITOR_TEMPLATE = {
+    "name": DEGRADED_MONITOR_NAME,
+    "type": "query alert",
+    "query": "sum(last_5m):sum:pipeline.records.failed{*} > 0",
+    "message": (
+        "Pipeline failures were reported in the last 5 minutes. "
+        "Check the AirQuality Guardian pipeline logs."
+    ),
+    "options": {
+        "thresholds": {"critical": 0},
+        "notify_no_data": False,
+        "include_tags": True,
+    },
+}
+
+
+def ensure_degraded_monitor(datadog: DatadogIntegrator | None) -> None:
+    """Make sure the pipeline-degraded monitor exists (ensure-once).
+
+    Called from run_cycle only when the cycle produced an incident.
+    Telemetry must never take the pipeline down, so a Datadog outage here
+    is logged and swallowed.
+    """
+    if datadog is None:
+        return
+    try:
+        monitor_id = datadog.ensure_monitor(
+            DEGRADED_MONITOR_NAME, DEGRADED_MONITOR_TEMPLATE
+        )
+        logger.info("Ensured degraded monitor (id={})", monitor_id)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Could not ensure the degraded monitor: {}", error)
+
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse the command line for the pipeline entry point.
@@ -201,6 +240,10 @@ async def run_cycle(
             result.incident.error,
             result.incident.retryable,
         )
+        # 2.12: an incident means we should be alerting on it. Ensure the
+        # degraded monitor exists (no-op once created); it auto-resolves
+        # natively when pipeline.records.failed stops firing.
+        ensure_degraded_monitor(datadog)
     logger.info(
         "Pipeline run complete: location_id={} fetched={} valid={} "
         "inserted={} skipped_dedup={} failed={} duration_seconds={:.2f}",

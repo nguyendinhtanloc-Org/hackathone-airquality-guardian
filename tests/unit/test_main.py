@@ -67,6 +67,50 @@ def test_prune_expired_quarantine_calls_cleanup_and_survives_failures():
     assert cleanup.call_count == 2
 
 
+@pytest.mark.asyncio
+async def test_cycle_falls_back_to_stored_aqi_when_fully_deduped():
+    """Bug-2 regression: a fully-deduped cycle has no fresh documents, so
+    the 'datavalue.aqi.current' gauge used to vanish on exactly the
+    cycles that repeat data. It must fall back to the newest stored doc."""
+    database = MagicMock()
+    database.quarantine_events = "the-collection"
+    database.quarantine_retention_days = 7
+    database.query_air_quality.return_value = [
+        {
+            "metadata": {"location_id": 4946813},
+            "aqi": {"pm25_aqi": 88},
+        }
+    ]
+    datadog = MagicMock()
+    datadog.send_metrics.return_value = {"errors": []}
+
+    pipeline = MagicMock()
+
+    async def run_once(_params):
+        return pipeline_main.PipelineRunResult(
+            location_id=4946813,
+            records_fetched=2,
+            records_valid=2,
+            records_inserted=0,
+            records_failed=0,
+            duration_seconds=0.1,
+            documents=(),
+            status="running",
+            records_skipped=2,
+        )
+
+    pipeline.run_once = run_once
+    pipeline.self_healing_engine.incidents = []
+
+    await pipeline_main.run_cycle(database, datadog, pipeline, 4946813)
+
+    sent_metrics = datadog.send_metrics.call_args.args[0]
+    assert sent_metrics["datavalue.aqi.current"] == 88
+    database.query_air_quality.assert_called_once_with(
+        {"metadata.location_id": 4946813}, limit=1
+    )
+
+
 def test_run_cycle_prunes_expired_quarantine_before_fetching(monkeypatch):
     prune_calls = []
     monkeypatch.setattr(

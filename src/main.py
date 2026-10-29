@@ -132,9 +132,17 @@ async def replay_quarantined(
     async def processor(data: object) -> None:
         params = data if isinstance(data, dict) else {}
         result = await pipeline.run_once(params)
-        if result.status != "running" or result.records_inserted == 0:
+        # A replay succeeded when the data is guaranteed to be in the DB:
+        # either it was just inserted, or it was already there (dedup gate
+        # rejected the re-emit). inserted==0 AND skipped==0 is the only
+        # case where nothing is confirmed persisted -> real failure.
+        if result.status != "running" or (
+            result.records_inserted == 0 and result.records_skipped == 0
+        ):
             raise RuntimeError(
-                f"Replay did not persist data (status={result.status})."
+                f"Replay did not persist data "
+                f"(status={result.status}, inserted={result.records_inserted}, "
+                f"skipped_dedup={result.records_skipped})."
             )
 
     summary = await self_healing_engine.replay_quarantined_async(
@@ -225,6 +233,22 @@ async def run_cycle(
         for key, value in document["aqi"].items()
         if key.endswith("_aqi") and isinstance(value, (int, float))
     ]
+    if not aqis:
+        # No new documents this cycle (fully deduped, or an empty fetch):
+        # the station's current AQI still lives in the newest stored doc, so
+        # look it up to keep the gauge from gapping on duplicate cycles.
+        # Telemetry must never take the cycle down, so swallow a lookup
+        # failure (including non-DB fakes in tests).
+        try:
+            newest = database.query_air_quality(
+                {"metadata.location_id": result.location_id}, limit=1
+            )
+            for document in newest or []:
+                for key, value in (document.get("aqi") or {}).items():
+                    if key.endswith("_aqi") and isinstance(value, (int, float)):
+                        aqis.append(value)
+        except Exception:
+            logger.debug("Could not look up the latest stored AQI")
     if aqis:
         metrics["datavalue.aqi.current"] = max(aqis)
 

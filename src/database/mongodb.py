@@ -43,13 +43,19 @@ class MongoDBClient:
 
         database_name = database_name or os.getenv("MONGODB_DATABASE")
         if database_name is None:
+            # MONGODB_DATABASE_NAME is the variable the Atlas onboarding
+            # console prints into .env; treat it as an alias so a copy-
+            # paste from Atlas works without editing variable names.
+            database_name = os.getenv("MONGODB_DATABASE_NAME")
+        if database_name is None:
             default_database = client.get_default_database(default=None)
             if default_database is not None:
                 database_name = default_database.name
         if not database_name:
             client.close()
             raise ValueError(
-                "Set MONGODB_DATABASE or include a database name in MONGODB_URI."
+                "Set MONGODB_DATABASE (or MONGODB_DATABASE_NAME) or "
+                "include a database name in MONGODB_URI."
             )
 
         # Read at construction time (after load_dotenv may have run), NOT at

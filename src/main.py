@@ -89,6 +89,14 @@ def build_pipeline(
     production path can never fall back to the in-memory store, where
     quarantined records would be lost on restart. The in-memory mode
     remains available for dev/tests that build a manager directly.
+
+    NOTE (audit): the ``is None`` check below is a defensive guard, not a
+    live one - with a real pymongo ``MongoDBClient`` the attribute is
+    always a ``Collection`` object, so it never fires in production.
+    It exists to catch a miswiring that passes None, and is covered by
+    test_main. Do not "fix" it into a permission/exists probe: that
+    would add a startup write and is out of scope for the pipeline entry
+    point.
     """
     quarantine_collection = database.quarantine_events
     if quarantine_collection is None:

@@ -226,6 +226,11 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     monkeypatch,
 ):
     monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.delenv("MONGODB_DATABASE_NAME", raising=False)
+    # Keep the test hermetic: the constructor's load_dotenv() would
+    # otherwise re-populate MONGODB_DATABASE_NAME from the project's real
+    # .env and take the alias path instead of get_default_database().
+    monkeypatch.setattr("src.database.mongodb.load_dotenv", lambda *a, **k: None)
     client = MagicMock()
     default_database = MagicMock()
     default_database.name = "airquality"
@@ -247,6 +252,32 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
 
     client.get_default_database.assert_called_once_with(default=None)
     client.__getitem__.assert_called_once_with("airquality")
+    assert database_client.database is database
+
+
+def test_database_name_alias_mongodb_database_name(monkeypatch):
+    """MONGODB_DATABASE_NAME is what the Atlas onboarding console writes
+    into .env; it must be honored as an alias so a verbatim Atlas copy
+    works without renaming the variable."""
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.setenv("MONGODB_DATABASE_NAME", "atlas_db")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+
+    database_client = MongoDBClient(
+        uri="mongodb+srv://user:pass@host/otherdb",
+        client=client,
+    )
+
+    client.__getitem__.assert_called_once_with("atlas_db")
     assert database_client.database is database
 
 

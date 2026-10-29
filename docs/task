@@ -85,4 +85,25 @@ b) GIỚI HẠN THIẾT KẾ TTL vs DEDUP TRÊN DATA CŨ: cảm biến CO của
    2.14 (docs) làm known limitation, hoặc cân nhắc key marker theo
    observation timestamp thay vì created_at (bản thảo, chưa làm).
 
+AUDIT LẦN 2 (29/10) — 2 bug theo-sau từ dedup-skip, ĐÃ SỬA (commit c908ca1, bbc40fc, de859c3):
+
+- replay coi chu kỳ chỉ-skip (data đã có trong DB) là thành công chứ không
+  phải failed (tránh ping-pong tới trần attempt). e2e scenario 5 chứng minh.
+- gauge datavalue.aqi.current fallback ra doc mới nhất khi chu kỳ toàn dedup
+  (tránh méo gap trên dashboard).
+
+AUDIT LẦN 2 (tiếp) — 3 điểm còn lại, ĐÃ XỬ LÝ (commit sau c908ca1):
+
+- .env chết MONGODB_DATABASE_NAME: code giờ đọc MONGODB_DATABASE_NAME làm alias
+  của MONGODB_DATABASE (đúng biến Atlas console nạp), nên .env copy trực tiếp
+  từ Atlas nối được không cần đổi tên biến. + test.
+- guard fail-fast `quarantine_events is None`: GIỮ NGUYÊN (lớp an toàn, có test),
+  thêm NOTE vào docstring main.py giải thích đây là defensive guard không phải
+  live check — không "fix" thành probe permission (ngoài phạm vi entry point).
+- aqi.calculate_all chưa ai gọi: GIỮ, thêm NOTE là tiện ích cho 2.13 --report
+  (người 2 sẽ dùng) — không xóa nhầm.
+
+⇒ Hết bug ẩn + hết code chết. Chưa commit: sẵn sàng cho người 2 làm 2.10/2.12/
+   2.13/2.14 + C1/2.8 như danh sách gốc.
+
 CÒN 2.13 2.14 2.8 2.12 ( test ok nhưng không biết tiêu chí audit)

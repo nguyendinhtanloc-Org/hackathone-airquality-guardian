@@ -1,117 +1,105 @@
-1
+TIMELINE — TÌNH TRẠNG CÔNG VIỆC (cập nhật 29/10, sau step 1–4)
 
-2.11 — Apply Datadog
+[H] = hoàn thành (code + test xanh 164/164, commit nêu bên dưới)
+[L] = code xong, CHƯA xác nhận trên hạ tầng thật (cần chạy trên Mac)
+[x] = còn việc thật, ghi rõ hướng làm
 
-CÒN CHẠY THẬT: python scripts/apply_datadog.py (tạo 3 monitors) +
-python scripts/apply_dashboard.py, xác nhận trên UI Datadog.
-Đã fix: metric selfhealing.quarantine.count trước đây không ai emit →
-monitor #2 "quarantine overflow" là dead monitor (commit 1e91afc).
+1. 2.10 — MongoDB Time Series ......... [H]
+   Bằng chứng live: 3 lần verify_live.py 5/5 OK trên Atlas (29/10),
+   khởi động không còn crash code 72. Không còn việc code.
 
-2
+2. 2.11 — Apply Datadog ............... [L]
+   Code đã xong + 1 bug thật đã sửa: monitor #2 "quarantine overflow"
+   query metric selfhealing.quarantine.count nhưng KHÔNG có dòng code
+   nào emit metric đó → monitor chết từ đầu (dead monitor). Đã thêm
+   emit (count_documents pending+in_flight, mỗi chu kỳ) ở commit 1e91afc.
+   CÒN CHẠY TRÊN MAC:
+     python scripts/apply_datadog.py      # tạo/ cập nhật 3 monitors
+     python scripts/apply_dashboard.py    # tạo dashboard
+   Tiêu chí "xong": 3 monitors + dashboard hiện trên UI Datadog;
+   monitor #2 có thể fire (metric đã được emit).
 
-2.10 — MongoDB Time Series
+3. 2.12 — Runtime Monitor ............. [H] (xác nhận thật = [L])
+   Hướng làm: đảm bảo 1 monitor "pipeline degraded" TỒN TẠI khi có
+   incident (ensure-once: DatadogIntegrator.ensure_monitor() GET list
+   monitor theo tên → có thì no-op trả id, chưa có thì POST create).
+   - Gọi trong run_cycle chỉ khi chu kỳ có incident (chạy khỏe =
+     không đụng API monitor, không spam).
+   - Auto-resolve: native của Datadog — query sum(last_5m):
+     pipeline.records.failed > 0 tự về OK khi failed = 0, không cần
+     gọi resolve API thủ công.
+   - Template monitor NHẢY TỪ config/datadog/monitors.json (một
+     nguồn thật duy nhất): run_cycle / apply_datadog.py / 2.12 dùng
+     CÙNG template → không bao giờ sinh 2 monitor trùng tên.
+   - Telemetry best-effort: lỗi Datadog (outage, thiếu app key)
+     được catch + log warning, KHÔNG làm chết pipeline.
+   Code + test ở commit cc9029c (3 tests ensure_monitor + 3 tests
+   run_cycle). Xác nhận thật: sau 2.11, mock OpenAQ lỗi (hoặc tắt
+   mạng 5 phút) → chạy 1 chu kỳ degraded → monitor xuất hiện/toggle
+   trên Datadog.
 
-HOÀN THÀNH (xác nhận live 29/10: 3 lần verify_live.py 5/5 OK trên
-Atlas thật, time-series + meta-scoped TTL chạy được, không còn crash
-code 72).
+4. 2.13 — CLI Report .................. [H] (xác nhận thật = [L])
+   Hướng làm: python -m src.main --report = chế độ READ-ONLY, không
+   fetch, không chạy chu kỳ pipeline, không Datadog — chỉ đọc DB đã
+   lưu rồi in bảng ra terminal:
+     - "current"   : doc MỚI NHẤT của location (limit=1) → dùng
+       aqi.calculate_all (utility đã để sẵn từ trước) tính lại AQI
+       per-pollutant theo EPA breakpoints + mức/color/mô tả.
+     - "history"   : MongoDBClient.aggregate_aqi (avg/min/max/records
+       theo location trong cửa sổ retention, pipeline thời gian
+       $map+$group).
+   - Flag --report, --report-limit (khối lượng đọc) tách khỏi luồng
+     chạy pipeline: parse_args --report → main() rẽ trước khi build
+     fetcher/validator/Datadog → in bảng → database.close().
+   Code + test ở commit 50218f9 (+ ponytail 4c39cd6 cắt cờ --report-limit
+   thừa vì chỉ đọc 1 doc mới nhất → giữ limit=1). Xác nhận thật:
+   python -m src.main --report khi DB đã có dữ liệu.
 
-3
+5. 2.14 — Documentation ............... [x]
+   Hướng làm: viết README/docs dựa trên CODE + cấu hình cuối (không
+   viết sớm vì code vẫn đổi). Bắt buộc ghi 2 known-limitation:
+     a) TTL vs DEDUP trên data cũ (CO của 4946813 còn trả 04/24,
+        observation TTL có thể xóa doc trong khi marker dedup vẫn
+        sống → chu kỳ sau vẫn skip CO dù data đã mất). Không fix
+        trước deadline.
+     b) 2 cảm biến no2 + co của 4946813 đang "stuck" (không phát
+        reading mới) → skipped_dedup=2 lặp lại mỗi chu kỳ; monitor
+        pipeline.records.skipped_dedup để watch.
+   Kèm hướng dẫn deploy (docs/DEPLOY.md đã có runbook + fallback
+   demo local: 1 lần python -m src.main vẫn push thật lên Atlas +
+   Datadog).
 
-2.12 — Runtime Monitor
+6. 2.8 / C1 — Quarantine schema ....... [x]
+   Hướng làm (đã chốt từ trước, chưa đụng code):
+   - Đường GHI duy nhất = QuarantineManager (A): claim/lease,
+     replayed, failed, cleanup, TTL retention.
+   - API B của MongoDBClient (insert_quarantine, mark_quarantine_
+     replayed, mark_quarantine_failed, query_pending_quarantine)
+     hiện không còn runtime caller (audit grep: chỉ tests). Hạ xuống
+     read-only (document) hoặc xóa; giữ query_pending_quarantine để
+     tra cứu nếu cần. Test cho mỗi lần xóa.
 
-HOÀN THÀNH (code + test, commit cc9029c): run_cycle gọi
-DatadogIntegrator.ensure_monitor() (ensure-once: GET theo tên, chưa
-có thì create, có thì no-op) chỉ khi chu kỳ có incident. Monitor
-"pipeline degraded" query pipeline.records.failed > 0 và AUTO-RESOLVE
-tự nhiên khi failed về 0 (native Datadog, không cần gọi resolve API).
-Template dùng chung với config/datadog/monitors.json nên runtime và
-apply_datadog.py quản lý CÙNG monitor, không sinh duplicate.
-Xác nhận thật: sau khi chạy apply_datadog.py, tạo incident (tắt
-OpenAQ/mock lỗi) rồi xem monitor fire trên Datadog.
+7. BLOCKER — Xoay password Atlas ...... [x]
+   Credential thật nằm trong git history (PR #6). Trước demo/submit:
+     1) Atlas Console → Users & Security → đổi password user DB.
+     2) Cập nhật .env (bị gitignore, không vào history):
+        MONGODB_URI="mongodb+srv://user:PASSWORD_MOI@cluster.../?appName=..."
+     3) Chạy lại verify_live.py → 5/5 OK.
 
-4
+TÌNH TRẠNG SUITE: 164 passed (unit + integration + e2e).
 
-2.13 — CLI Report
-
-HOÀN THÀNH (code + test, commit 50218f9 + 4c39cd6):
-python -m src.main --report in bảng AQI (pollutant | value | aqi |
-level) + thống kê lưu trữ, read-only (không fetch, không cycle).
-Xác nhận thật: python -m src.main --report với data đã có trong Atlas.
-
-5
-
-2.14 — Documentation
-
-Chưa hoàn thành
-
-Viết docs dựa trên code và cấu hình thực tế
-
-6
-
-2.8 — Quarantine schema
-
-Còn điểm cần thống nhất
-
-Xử lý phần API của MongoDBClient đang chồng chéo trách nhiệm với QuarantineManager
-
-
-QuarantineManager là nơi duy nhất quản lý vòng đời quarantine: claim, replayed, failed và cleanup.
-
-MongoDBClient.query_pending_quarantine() có thể giữ để đọc, kiểm tra dữ liệu.
-
-MongoDBClient.mark_quarantine_replayed() và mark_quarantine_failed() không nên tiếp tục là một đường ghi trạng thái độc lập.
-
-7
-
-AUDIT BUG ẨN (29/10) — verify_live.py CHẠY THẬT TRÊN ATLAS: 5/5 OK
-
-Bằng chứng từ 2 lần chạy verify_live.py trên hạ tầng thật:
-
-- khởi động atlas KHÔNG CÒN crash code 72 (TTL time-series giờ meta-scoped,
-  commit 524c89c).
-- dedup marker-first đúng: run #1 inserted=5, run #2 inserted=1
-  skipped_dedup=5 (cùng quan sát -> marker chặn, không có record trùng).
-- metrics + logs Datadog được accept -> phần metrics/log của 2.11
-  đã xác nhận thật (còn DASHBOARD + 3 MONITORS chưa ai xác nhận).
-- ceiling CO 100->5000 µg/m³ (commit 59808d2): co=984.57 không còn bị drop.
-- suite: 147 passed (unit + e2e + integration).
-
-2 điểm ghi cho Người 2 (không chặn, chỉ theo dõi):
-
-a) CREDENTIALS THẬT ĐÃ BỊ COMMIT VÀO GIT HISTORY (PR #6, .env.example cũ).
-   Đã thay .env.example bằng placeholder (commit de4589e) nhưng KHÔNG xóa
-   được khỏi history -> BẮT BUỘC xoay password Atlas (đổi MONGODB_URI trong
-   .env theo) trước khi demo/submit.
-
-b) GIỚI HẠN THIẾT KẾ TTL vs DEDUP TRÊN DATA CŨ: cảm biến CO của
-   4946813 trả latest = 2026-04-24 (~6 tháng cũ). TTL air_quality key
-   theo timestamp (30 ngày) nên có thể xóa document CO, trong khi marker
-   dedup key theo created_at còn sống -> chu kỳ sau vẫn skip CO dù data
-   đã mất. Chỉ xảy ra với cảm biến trả data cũ; data tươi thì 2 horizon
-   trùng nhau nên không ảnh hưởng. Nếu trạm đổi cảm biến/CO cập nhật
-   lại, hiện tượng tự hết. Đề xuất: không fix trước deadline; đưa vào
-   2.14 (docs) làm known limitation, hoặc cân nhắc key marker theo
-   observation timestamp thay vì created_at (bản thảo, chưa làm).
-
-AUDIT LẦN 2 (29/10) — 2 bug theo-sau từ dedup-skip, ĐÃ SỬA (commit c908ca1, bbc40fc, de859c3):
-
-- replay coi chu kỳ chỉ-skip (data đã có trong DB) là thành công chứ không
-  phải failed (tránh ping-pong tới trần attempt). e2e scenario 5 chứng minh.
-- gauge datavalue.aqi.current fallback ra doc mới nhất khi chu kỳ toàn dedup
-  (tránh méo gap trên dashboard).
-
-AUDIT LẦN 2 (tiếp) — 3 điểm còn lại, ĐÃ XỬ LÝ (commit sau c908ca1):
-
-- .env chết MONGODB_DATABASE_NAME: code giờ đọc MONGODB_DATABASE_NAME làm alias
-  của MONGODB_DATABASE (đúng biến Atlas console nạp), nên .env copy trực tiếp
-  từ Atlas nối được không cần đổi tên biến. + test.
-- guard fail-fast `quarantine_events is None`: GIỮ NGUYÊN (lớp an toàn, có test),
-  thêm NOTE vào docstring main.py giải thích đây là defensive guard không phải
-  live check — không "fix" thành probe permission (ngoài phạm vi entry point).
-- aqi.calculate_all chưa ai gọi: GIỮ, thêm NOTE là tiện ích cho 2.13 --report
-  (người 2 sẽ dùng) — không xóa nhầm.
-
-⇒ Hết bug ẩn + hết code chết. Chưa commit: sẵn sàng cho người 2 làm 2.10/2.12/
-   2.13/2.14 + C1/2.8 như danh sách gốc.
-
-CÒN 2.13 2.14 2.8 2.12 ( test ok nhưng không biết tiêu chí audit)
+COMMIT CẦN PUSH (cập nhật lần này, theo thứ tự mới → cũ):
+  1. docs/task — file này (tick timeline + hướng làm cho Người 2)
+  2. bb9d09c   docs/task (bản cũ trước khi tick)
+  3. 4c39cd6   ponytail: bỏ cờ --report-limit (report chỉ cần doc mới nhất)
+  4. 50218f9   2.13 --report (build_aqi_report + format_aqi_report + main)
+  5. cc9029c   2.12 ensure-once monitor (integrator.ensure_monitor + run_cycle)
+  6. 1e91afc   phát metric selfhealing.quarantine.count (mongodb.py + main.py
+               + test_mongodb.py + test_pipeline_e2e.py fake)
+  7. 7337b81   db-name alias + NOTE guard + NOTE calculate_all (mongodb.py,
+               test_mongodb.py, main.py, calculator.py, docs/task)
+  8. de859c3   verify_live coi chu kỳ fully-deduped là PASS (verify_live.py)
+  9. bbc40fc   e2e scenario 5 replay already-stored (test_pipeline_e2e.py)
+  10. c908ca1  fix replay-dedup + AQI gauge fallback (main.py, test_replay_cli.py,
+               test_main.py)
+Push từ Mac: git push origin data-pipeline

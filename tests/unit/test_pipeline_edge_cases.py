@@ -77,6 +77,11 @@ async def test_database_insert_failure_returns_degraded(
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("Mongo connection lost")
+        # Production contract: insert_air_quality returns a real
+        # inserted_id on success and None ONLY when the dedup gate
+        # rejected the doc. Call #1 is a genuine insert -> non-None.
+        return "record-1"
+
 
     database.insert_air_quality.side_effect = insert
     pipeline = build_pipeline(
@@ -140,6 +145,29 @@ async def test_fetched_but_nothing_stored_is_degraded(engine, database):
     assert result.records_inserted == 0
     assert result.records_failed == 2
     assert result.status == "degraded"
+
+
+@pytest.mark.asyncio
+async def test_fully_deduped_cycle_is_running_not_degraded(
+    engine, database
+):
+    """Every observation already stored (dedup gate -> None): nothing was
+    lost, so the cycle is healthy. Reporting degraded here would fire a
+    false alert on every slow-station re-emission."""
+    database.insert_air_quality.return_value = None
+    pipeline = build_pipeline(
+        engine,
+        database,
+        _returning(_results(_row(), _row(utc="2026-10-19T11:00:00Z"))),
+    )
+
+    result = await pipeline.run_once()
+
+    assert result.records_fetched == 2
+    assert result.records_inserted == 0
+    assert result.records_skipped == 2
+    assert result.status == "running"
+    assert result.incident is None
 
 
 @pytest.mark.asyncio

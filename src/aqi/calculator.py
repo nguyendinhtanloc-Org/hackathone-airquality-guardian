@@ -122,9 +122,13 @@ class AQICalculator:
         
         Args:
             measurements: List of Measurement objects
-            
+
         Returns:
             Dict chứa AQI theo parameter và AQI tổng
+
+        NOTE (audit): not called by the ingest pipeline (which uses the
+        per-pollutant calculate() + get_level()); this is the summary
+        primitive the 2.13 `--report` CLI task will consume - keep it.
         """
         aqi_values = {}
         

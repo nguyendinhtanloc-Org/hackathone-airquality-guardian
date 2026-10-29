@@ -7,8 +7,10 @@ import asyncio
 import os
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
+
+from typing import Any
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -16,6 +18,7 @@ from loguru import logger
 from src.fetcher.fetcher import DataFetcher
 from src.validation.validator import DataValidator
 from src.aqi.calculator import AQICalculator
+from src.models.sensor_data import Measurement
 from src.database.mongodb import MongoDBClient
 from src.datadog.integrator import DatadogIntegrator
 from src.pipeline import Pipeline, PipelineRunResult
@@ -36,6 +39,45 @@ logger.add(
 
 DEFAULT_LOCATION_ID = 4946813
 DEFAULT_REPLAY_LIMIT = 100
+
+# 2.12 runtime monitor: created on demand the first time the pipeline hits
+# an incident, so a fresh environment alerts without waiting for a manual
+# ``apply_datadog.py`` run. Same template as config/datadog/monitors.json
+# ("pipeline degraded"): it fires on pipeline.records.failed > 0 and
+# auto-resolves natively when failures stop — no manual resolve needed.
+DEGRADED_MONITOR_NAME = "AirQuality Guardian: pipeline degraded"
+DEGRADED_MONITOR_TEMPLATE = {
+    "name": DEGRADED_MONITOR_NAME,
+    "type": "query alert",
+    "query": "sum(last_5m):sum:pipeline.records.failed{*} > 0",
+    "message": (
+        "Pipeline failures were reported in the last 5 minutes. "
+        "Check the AirQuality Guardian pipeline logs."
+    ),
+    "options": {
+        "thresholds": {"critical": 0},
+        "notify_no_data": False,
+        "include_tags": True,
+    },
+}
+
+
+def ensure_degraded_monitor(datadog: DatadogIntegrator | None) -> None:
+    """Make sure the pipeline-degraded monitor exists (ensure-once).
+
+    Called from run_cycle only when the cycle produced an incident.
+    Telemetry must never take the pipeline down, so a Datadog outage here
+    is logged and swallowed.
+    """
+    if datadog is None:
+        return
+    try:
+        monitor_id = datadog.ensure_monitor(
+            DEGRADED_MONITOR_NAME, DEGRADED_MONITOR_TEMPLATE
+        )
+        logger.info("Ensured degraded monitor (id={})", monitor_id)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("Could not ensure the degraded monitor: {}", error)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -74,6 +116,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "For deployment; a single run is the default."
         ),
     )
+    parser.add_argument(
+        "--report",
+        action="store_true",
+        help=(
+            "Print an AQI summary table from the stored data and exit "
+            "(no fetch, no pipeline cycle)."
+        ),
+    )
     return parser.parse_args(
         list(argv) if argv is not None else sys.argv[1:]
     )
@@ -89,6 +139,14 @@ def build_pipeline(
     production path can never fall back to the in-memory store, where
     quarantined records would be lost on restart. The in-memory mode
     remains available for dev/tests that build a manager directly.
+
+    NOTE (audit): the ``is None`` check below is a defensive guard, not a
+    live one - with a real pymongo ``MongoDBClient`` the attribute is
+    always a ``Collection`` object, so it never fires in production.
+    It exists to catch a miswiring that passes None, and is covered by
+    test_main. Do not "fix" it into a permission/exists probe: that
+    would add a startup write and is out of scope for the pipeline entry
+    point.
     """
     quarantine_collection = database.quarantine_events
     if quarantine_collection is None:
@@ -132,9 +190,17 @@ async def replay_quarantined(
     async def processor(data: object) -> None:
         params = data if isinstance(data, dict) else {}
         result = await pipeline.run_once(params)
-        if result.status != "running" or result.records_inserted == 0:
+        # A replay succeeded when the data is guaranteed to be in the DB:
+        # either it was just inserted, or it was already there (dedup gate
+        # rejected the re-emit). inserted==0 AND skipped==0 is the only
+        # case where nothing is confirmed persisted -> real failure.
+        if result.status != "running" or (
+            result.records_inserted == 0 and result.records_skipped == 0
+        ):
             raise RuntimeError(
-                f"Replay did not persist data (status={result.status})."
+                f"Replay did not persist data "
+                f"(status={result.status}, inserted={result.records_inserted}, "
+                f"skipped_dedup={result.records_skipped})."
             )
 
     summary = await self_healing_engine.replay_quarantined_async(
@@ -165,6 +231,134 @@ def prune_expired_quarantine(pipeline: Pipeline) -> None:
         logger.exception("Quarantine cleanup failed; continuing anyway.")
 
 
+def _measurements_from_document(document: Mapping[str, Any]) -> list[Measurement]:
+    """Rebuild Measurement objects from a stored air_quality document.
+
+    The stored measurements dict maps ``<param> -> value`` and
+    ``<param>_unit -> unit``; keys ending in ``_unit`` are skipped.
+    """
+    raw = document.get("measurements") or {}
+    measurements: list[Measurement] = []
+    for key, value in raw.items():
+        if key.endswith("_unit"):
+            continue
+        measurements.append(
+            Measurement(
+                parameter=key,
+                value=float(value),
+                unit=str(raw.get(f"{key}_unit", "")),
+            )
+        )
+    return measurements
+
+
+def build_aqi_report(
+    database: MongoDBClient,
+    location_id: int,
+) -> dict[str, Any]:
+    """Summarise stored AQI for one location (no fetch, no cycle).
+
+    'current' is the newest stored document broken down per pollutant via
+    calculate_all (only documents[0] is used, so it fetches limit=1);
+    'history' is the retention-window avg/min/max from aggregate_aqi.
+    """
+    filters = {"metadata.location_id": location_id}
+    documents = database.query_air_quality(filters, limit=1)
+
+    calculator = AQICalculator()
+    current: dict[str, Any] | None = None
+    per_pollutant: list[dict[str, Any]] = []
+    if documents:
+        summary = calculator.calculate_all(
+            _measurements_from_document(documents[0])
+        )
+        level = summary.get("level") or {}
+        current = {
+            "timestamp": documents[0].get("timestamp"),
+            "primary_pollutant": summary.get("primary_pollutant"),
+            "aqi": summary.get("aqi"),
+            "level": level,
+        }
+        for parameter, info in (summary.get("all") or {}).items():
+            per_pollutant.append(
+                {
+                    "parameter": parameter,
+                    "value": info.get("value"),
+                    "unit": info.get("unit", ""),
+                    "aqi": info.get("aqi"),
+                    "level": calculator.get_level(info.get("aqi")),
+                }
+            )
+
+    history = [
+        {
+            "location_id": row.get("_id"),
+            "average_aqi": row.get("average_aqi"),
+            "min_aqi": row.get("min_aqi"),
+            "max_aqi": row.get("max_aqi"),
+            "records": row.get("records"),
+        }
+        for row in database.aggregate_aqi(filters)
+    ]
+    return {
+        "location_id": location_id,
+        "current": current,
+        "per_pollutant": per_pollutant,
+        "history": history,
+    }
+
+
+def _fmt_num(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def format_aqi_report(report: Mapping[str, Any]) -> str:
+    """Render an AQI report as an aligned text table."""
+    location_id = report.get("location_id")
+    current = report.get("current")
+    lines = [f"AQI report - location {location_id}"]
+    if current is None:
+        lines.append("(no stored air-quality data)")
+        return "\n".join(lines)
+
+    timestamp = current.get("timestamp")
+    ts = timestamp.isoformat() if hasattr(timestamp, "isoformat") else timestamp
+    level = current.get("level") or {}
+    lines += [
+        "",
+        "Current (newest reading)",
+        f"  primary pollutant : {current.get('primary_pollutant')}",
+        f"  overall AQI       : {current.get('aqi')}",
+        f"  level             : {level.get('level')} - {level.get('description', '')} [{level.get('color', '')}]",
+    ]
+
+    per_pollutant = report.get("per_pollutant") or []
+    if per_pollutant:
+        lines += ["", "  pollutant      value     aqi   level"]
+        for p in per_pollutant:
+            lv = p.get("level") or {}
+            lines.append(
+                f"  {p.get('parameter', ''):<8} {_fmt_num(p.get('value')):>8}  "
+                f"{_fmt_num(p.get('aqi')):>5}  {lv.get('level', '')} ({p.get('unit', '')})"
+            )
+
+    history = report.get("history") or []
+    if history:
+        lines += ["", "Stored window (avg/min/max over retention period)"]
+        lines.append(f"  location  avg    min    max  records")
+        for row in history:
+            lines.append(
+                f"  {row.get('location_id', ''):>8}  {_fmt_num(row.get('average_aqi')):>5}  "
+                f"{_fmt_num(row.get('min_aqi')):>5}  {_fmt_num(row.get('max_aqi')):>5}  "
+                f"{_fmt_num(row.get('records'))}"
+            )
+    return "\n".join(lines)
+
+
 async def run_cycle(
     database: MongoDBClient,
     datadog: DatadogIntegrator | None,
@@ -185,13 +379,18 @@ async def run_cycle(
             result.incident.error,
             result.incident.retryable,
         )
+        # 2.12: an incident means we should be alerting on it. Ensure the
+        # degraded monitor exists (no-op once created); it auto-resolves
+        # natively when pipeline.records.failed stops firing.
+        ensure_degraded_monitor(datadog)
     logger.info(
         "Pipeline run complete: location_id={} fetched={} valid={} "
-        "inserted={} failed={} duration_seconds={:.2f}",
+        "inserted={} skipped_dedup={} failed={} duration_seconds={:.2f}",
         result.location_id,
         result.records_fetched,
         result.records_valid,
         result.records_inserted,
+        result.records_skipped,
         result.records_failed,
         result.duration_seconds,
     )
@@ -213,9 +412,14 @@ async def run_cycle(
         "pipeline.records.fetched": result.records_fetched,
         "pipeline.records.valid": result.records_valid,
         "pipeline.records.inserted": result.records_inserted,
+        "pipeline.records.skipped_dedup": result.records_skipped,
         "pipeline.records.failed": result.records_failed,
         "pipeline.fetch.latency": result.duration_seconds,
         "pipeline.incidents.count": len(incidents),
+        # Revives the "quarantine overflow" monitor in monitors.json:
+        # it queries selfhealing.quarantine.count which was never emitted
+        # before, so the monitor could never fire.
+        "selfhealing.quarantine.count": database.count_pending_quarantine(),
     }
     aqis = [
         value
@@ -223,6 +427,22 @@ async def run_cycle(
         for key, value in document["aqi"].items()
         if key.endswith("_aqi") and isinstance(value, (int, float))
     ]
+    if not aqis:
+        # No new documents this cycle (fully deduped, or an empty fetch):
+        # the station's current AQI still lives in the newest stored doc, so
+        # look it up to keep the gauge from gapping on duplicate cycles.
+        # Telemetry must never take the cycle down, so swallow a lookup
+        # failure (including non-DB fakes in tests).
+        try:
+            newest = database.query_air_quality(
+                {"metadata.location_id": result.location_id}, limit=1
+            )
+            for document in newest or []:
+                for key, value in (document.get("aqi") or {}).items():
+                    if key.endswith("_aqi") and isinstance(value, (int, float)):
+                        aqis.append(value)
+        except Exception:
+            logger.debug("Could not look up the latest stored AQI")
     if aqis:
         metrics["datavalue.aqi.current"] = max(aqis)
 
@@ -391,27 +611,36 @@ async def main(argv: Sequence[str] | None = None) -> None:
     logger.info("MongoDB database: {}", database.database.name)
     logger.info("MongoDB collection: {}", database.air_quality.name)
     logger.info("MongoDB ping: {}", database.client.admin.command("ping"))
-    datadog = (
-        DatadogIntegrator()
-        if os.getenv("DATADOG_API_KEY")
-        else None
-    )
-    pipeline, self_healing_engine = build_pipeline(database)
     try:
-        if args.replay:
-            await replay_quarantined(
-                pipeline,
-                self_healing_engine,
-                limit=args.replay_limit,
-            )
+        if args.report:
+            # Read-only summary of what is already stored: no fetch, no
+            # pipeline cycle, no Datadog. Print and exit.
+            report = build_aqi_report(database, args.location_id)
+            print(format_aqi_report(report))
             return
-        if args.loop:
-            await run_loop(database, datadog, pipeline, args.location_id)
-        else:
-            await run_cycle(database, datadog, pipeline, args.location_id)
+
+        datadog = (
+            DatadogIntegrator()
+            if os.getenv("DATADOG_API_KEY")
+            else None
+        )
+        pipeline, self_healing_engine = build_pipeline(database)
+        try:
+            if args.replay:
+                await replay_quarantined(
+                    pipeline,
+                    self_healing_engine,
+                    limit=args.replay_limit,
+                )
+                return
+            if args.loop:
+                await run_loop(database, datadog, pipeline, args.location_id)
+            else:
+                await run_cycle(database, datadog, pipeline, args.location_id)
+        finally:
+            if datadog is not None:
+                datadog.close()
     finally:
-        if datadog is not None:
-            datadog.close()
         database.close()
 
 

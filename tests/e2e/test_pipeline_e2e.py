@@ -67,6 +67,17 @@ class _FakeAirQuality:
         self.documents.append(doc)
         return SimpleNamespace(inserted_id=uuid.uuid4())
 
+    def delete_one(self, filters: dict) -> SimpleNamespace:
+        # Rollback semantic: remove the doc and free its dedup_key so a
+        # rolled-back marker can be re-asserted on the next attempt.
+        key = filters.get("dedup_key")
+        for doc in list(self.documents):
+            if doc.get("dedup_key") == key:
+                self.documents.remove(doc)
+                self._dedup_keys.discard(key)
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
     def find(self, filters: dict | None = None):
         filters = filters or {}
         docs = [
@@ -107,6 +118,10 @@ class _FakeQuarantine:
                     return {k: doc.get(k) for k in projection}
                 return doc
         return None
+
+    def count_documents(self, filters: dict | None = None) -> int:
+        filters = filters or {}
+        return sum(1 for doc in self.documents if _matches(doc, filters))
 
     def update_one(self, filters: dict, update: dict, **_kwargs):
         for doc in self.documents:
@@ -453,7 +468,11 @@ async def test_replay_marks_record_replayed_once_pipeline_recovers():
 
     async def processor(data):
         result = await pipeline.run_once(data)
-        if result.status != "running" or result.records_inserted == 0:
+        # Data in the DB (new insert OR already stored via dedup) is a
+        # successful replay; neither is a failure.
+        if result.status != "running" or (
+            result.records_inserted == 0 and result.records_skipped == 0
+        ):
             raise RuntimeError(f"replay did not persist (status={result.status})")
 
     summary = await engine.replay_quarantined_async(processor, limit=10)
@@ -462,3 +481,58 @@ async def test_replay_marks_record_replayed_once_pipeline_recovers():
     record = collections["quarantine_events"].documents[0]
     assert record["status"] == "replayed"
     assert record["replayed_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Scenario 5: replay of a record whose data is ALREADY stored
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replay_of_already_stored_data_succeeds_via_dedup_gate():
+    """Regression (audit 29/10): a fetch outage quarantines a record; the
+    data gets persisted anyway (next cycle or by hand); on replay the same
+    readings come back, all hit the dedup gate -> inserted=0, skipped>0.
+    Before the fix this replay was marked failed and retried to the cap,
+    parking a record that lost nothing."""
+    database, collections = build_database()
+    fetcher = DataFetcher(client_factory=make_openaq_client_factory("ok"))
+    engine = SelfHealingEngine(
+        quarantine_manager=QuarantineManager(
+            collection=collections["quarantine_events"],
+            max_replay_attempts=2,
+        ),
+        max_retries=3,
+    )
+    pipeline = Pipeline(
+        fetcher,
+        _validator(),
+        database,
+        self_healing_engine=engine,
+        backoff_seconds=0,
+    )
+
+    # First cycle persists the data...
+    first = await pipeline.run_once({"location_id": LOCATION_ID})
+    assert first.records_inserted == 2
+    # ...then a record gets quarantined for the same location (fetch 503).
+    engine.quarantine_data(
+        {"location_id": LOCATION_ID},
+        ConnectionError("OpenAQ server error 503"),
+    )
+
+    async def processor(data):
+        result = await pipeline.run_once(data)
+        if result.status != "running" or (
+            result.records_inserted == 0 and result.records_skipped == 0
+        ):
+            raise RuntimeError(f"replay did not persist (status={result.status})")
+
+    summary = await engine.replay_quarantined_async(processor, limit=10)
+
+    # The replay fetch re-emitted both readings; the dedup gate rejected
+    # both. No new document, but the data is present -> success.
+    assert summary == {"processed": 1, "succeeded": 1, "failed": 0}
+    record = collections["quarantine_events"].documents[0]
+    assert record["status"] == "replayed"
+    assert len(collections["air_quality"].documents) == 2  # still exactly 2

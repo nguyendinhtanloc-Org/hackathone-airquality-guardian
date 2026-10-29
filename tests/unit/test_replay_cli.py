@@ -33,17 +33,21 @@ def make_engine_with_pending(data, **kwargs):
     return engine
 
 
-def make_pipeline(engine, fetch_result=None, insert_count=1):
+def make_pipeline(engine, fetch_result=None, insert_count=1, skipped=0):
     pipeline = MagicMock()
-    pipeline.run_once = AsyncMock(return_value=make_result(insert_count))
+    pipeline.run_once = AsyncMock(return_value=make_result(insert_count, skipped))
     pipeline.self_healing_engine = engine
     return pipeline
 
 
-def make_result(insert_count):
+def make_result(insert_count, skipped=0):
     result = MagicMock()
-    result.status = "running" if insert_count else "degraded"
+    result.status = "running" if (insert_count or skipped) else "degraded"
     result.records_inserted = insert_count
+    # Must be a real int, not a bare MagicMock attribute, so the
+    # "nothing persisted" check (inserted==0 AND skipped==0) is evaluated
+    # the way the production PipelineRunResult dataclass would give it.
+    result.records_skipped = skipped
     return result
 
 
@@ -153,6 +157,22 @@ async def test_replay_increments_replay_attempts():
 
     record = next(iter(engine.quarantine_manager._memory_store.values()))
     assert record["replay_attempts"] == 1
+
+
+@pytest.mark.asyncio
+async def test_replay_succeeds_when_only_dedup_skips_occurred():
+    """Data already in the DB (dedup gate) is a successful replay: the
+    purpose of the replay is achieved. Before this fix, inserted==0
+    marked the record failed and retried it until the attempt cap, even
+    though nothing was ever lost."""
+    engine = make_engine_with_pending({"location_id": 4946813})
+    pipeline = make_pipeline(engine, insert_count=0, skipped=3)
+
+    summary = await pipeline_main.replay_quarantined(pipeline, engine, limit=100)
+
+    assert summary == {"processed": 1, "succeeded": 1, "failed": 0}
+    record = next(iter(engine.quarantine_manager._memory_store.values()))
+    assert record["status"] == "replayed"
 
 
 # --- main() routing ---------------------------------------------------

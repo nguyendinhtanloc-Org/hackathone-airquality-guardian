@@ -17,12 +17,16 @@ class DataValidator:
     # reports. A reading above this is a sensor fault, not real air.
     # (WHO guideline values are far lower; these are generous ceilings
     # that only catch obvious instrument errors.)
+    # CO: urban background is ~1-3 ppm (1.2k-3.5k µg/m³), so the old
+    # 100 µg/m³ ceiling was rejecting every normal reading - caught on
+    # live data (co=984 µg/m³ dropped each cycle). 5000 µg/m³ (~4.3 ppm)
+    # is still far above safe indoor levels, so only real faults pass.
     MAX_PLAUSIBLE = {
         "pm25": 1000.0,
         "pm10": 1500.0,
         "o3": 1000.0,
         "no2": 1000.0,
-        "co": 100.0,
+        "co": 5000.0,
         "so2": 1000.0,
     }
 

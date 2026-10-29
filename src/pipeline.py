@@ -31,6 +31,9 @@ class PipelineRunResult:
     incident: Incident | None = None
     status: str = "running"
     attempts: int = 1
+    # Observations rejected by the dedup gate (already stored): they are
+    # neither new inserts nor failures.
+    records_skipped: int = 0
 
 
 class Pipeline:
@@ -112,6 +115,7 @@ class Pipeline:
 
         fetched_count = len(response.get("results", []))
         inserted_documents: list[dict[str, Any]] = []
+        skipped_dedup = 0
         try:
             measurements = self.validator.validate(response)
             for measurement in measurements:
@@ -139,7 +143,16 @@ class Pipeline:
                     },
                     "aqi": aqi_data,
                 }
-                self.database.insert_air_quality(document)
+                insert_id = self.database.insert_air_quality(document)
+                if insert_id is None:
+                    # Dedup gate: this observation is already stored (same
+                    # measurement re-served by OpenAQ, or a --replay of
+                    # records the data is already in for). It was NOT a new
+                    # insert, so it is counted in records_skipped, excluded
+                    # from records_inserted, and not logged as a fresh doc.
+                    # Losing nothing here is healthy, not a failure.
+                    skipped_dedup += 1
+                    continue
                 inserted_documents.append(document)
         except Exception as error:
             incident = self.self_healing_engine.handle_error(
@@ -160,9 +173,14 @@ class Pipeline:
             return PipelineRunResult(
                 location_id=location_id,
                 records_fetched=fetched_count,
-                records_valid=len(inserted_documents),
+                records_valid=len(inserted_documents) + skipped_dedup,
                 records_inserted=len(inserted_documents),
-                records_failed=max(fetched_count - len(inserted_documents), 0),
+                # Skipped records are already stored, so the only truly
+                # lost records are the rest of the fetched batch.
+                records_failed=max(
+                    fetched_count - len(inserted_documents) - skipped_dedup, 0
+                ),
+                records_skipped=skipped_dedup,
                 duration_seconds=perf_counter() - started_at,
                 documents=tuple(inserted_documents),
                 incident=incident,
@@ -172,10 +190,14 @@ class Pipeline:
 
         records_valid = len(measurements)
         records_inserted = len(inserted_documents)
-        # Degraded means "we got data but could not store it" — the scheduler
-        # and alerting need to see that. An empty response is not an error:
-        # the location simply had no measurements this cycle.
-        if fetched_count > 0 and records_inserted == 0:
+        # Degraded means "we got data but could not store it" — the
+        # scheduler and alerting need to see that. An empty response is not
+        # an error: the location simply had no measurements this cycle. A
+        # cycle where every observation was already stored (dedup gate)
+        # stored nothing NEW but lost nothing either: that is a healthy
+        # run, and reporting it degraded would fire false alerts on slow
+        # stations, so fully-deduped cycles stay "running".
+        if fetched_count > 0 and records_inserted == 0 and skipped_dedup == 0:
             status = "degraded"
         else:
             status = "running"
@@ -190,6 +212,7 @@ class Pipeline:
             documents=tuple(inserted_documents),
             status=status,
             attempts=attempt + 1,
+            records_skipped=skipped_dedup,
         )
 
     @staticmethod

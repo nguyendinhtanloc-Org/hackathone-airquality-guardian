@@ -197,7 +197,7 @@ def test_build_aqi_report_summarises_newest_doc_and_history():
         {"_id": 4946813, "average_aqi": 44.0, "min_aqi": 30, "max_aqi": 58, "records": 12}
     ]
 
-    report = pipeline_main.build_aqi_report(database, 4946813, limit=10)
+    report = pipeline_main.build_aqi_report(database, 4946813)
 
     assert report["location_id"] == 4946813
     # newest doc drives 'current'
@@ -211,9 +211,9 @@ def test_build_aqi_report_summarises_newest_doc_and_history():
     assert by_param["o3"]["aqi"] == 19
     # history from the aggregate
     assert report["history"][0]["average_aqi"] == 44.0
-    # both DB helpers queried with the location filter
+    # only the newest doc is needed for "current", so it fetches limit=1
     database.query_air_quality.assert_called_once_with(
-        {"metadata.location_id": 4946813}, limit=10
+        {"metadata.location_id": 4946813}, limit=1
     )
     database.aggregate_aqi.assert_called_once_with(
         {"metadata.location_id": 4946813}
@@ -225,7 +225,7 @@ def test_build_aqi_report_handles_no_stored_data():
     database.query_air_quality.return_value = []
     database.aggregate_aqi.return_value = []
 
-    report = pipeline_main.build_aqi_report(database, 4946813, limit=10)
+    report = pipeline_main.build_aqi_report(database, 4946813)
 
     assert report["current"] is None
     assert report["per_pollutant"] == []
@@ -246,7 +246,7 @@ def test_format_aqi_report_renders_tables():
     ]
 
     text = pipeline_main.format_aqi_report(
-        pipeline_main.build_aqi_report(database, 4946813, limit=10)
+        pipeline_main.build_aqi_report(database, 4946813)
     )
 
     assert "location 4946813" in text
@@ -262,7 +262,7 @@ def test_format_aqi_report_no_data():
     database.aggregate_aqi.return_value = []
 
     text = pipeline_main.format_aqi_report(
-        pipeline_main.build_aqi_report(database, 4946813, limit=10)
+        pipeline_main.build_aqi_report(database, 4946813)
     )
 
     assert "no stored air-quality data" in text
@@ -298,13 +298,6 @@ async def test_main_report_flag_prints_table_and_skips_cycle(
     database.close.assert_called_once_with()
 
 
-def test_parse_args_report_defaults():
+def test_parse_args_report_flag():
     args = pipeline_main.parse_args(["--report"])
     assert args.report is True
-    assert args.report_limit == 100
-
-
-def test_parse_args_report_limit_override():
-    args = pipeline_main.parse_args(["--report", "--report-limit", "250"])
-    assert args.report is True
-    assert args.report_limit == 250

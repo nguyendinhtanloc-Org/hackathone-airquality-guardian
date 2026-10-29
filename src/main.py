@@ -39,7 +39,6 @@ logger.add(
 
 DEFAULT_LOCATION_ID = 4946813
 DEFAULT_REPLAY_LIMIT = 100
-DEFAULT_REPORT_LIMIT = 100
 
 # 2.12 runtime monitor: created on demand the first time the pipeline hits
 # an incident, so a fresh environment alerts without waiting for a manual
@@ -124,12 +123,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Print an AQI summary table from the stored data and exit "
             "(no fetch, no pipeline cycle)."
         ),
-    )
-    parser.add_argument(
-        "--report-limit",
-        type=int,
-        default=DEFAULT_REPORT_LIMIT,
-        help="How many stored air-quality records to summarise with --report.",
     )
     return parser.parse_args(
         list(argv) if argv is not None else sys.argv[1:]
@@ -262,16 +255,15 @@ def _measurements_from_document(document: Mapping[str, Any]) -> list[Measurement
 def build_aqi_report(
     database: MongoDBClient,
     location_id: int,
-    limit: int,
 ) -> dict[str, Any]:
     """Summarise stored AQI for one location (no fetch, no cycle).
 
     'current' is the newest stored document broken down per pollutant via
-    calculate_all; 'history' is the retention-window avg/min/max from
-    aggregate_aqi.
+    calculate_all (only documents[0] is used, so it fetches limit=1);
+    'history' is the retention-window avg/min/max from aggregate_aqi.
     """
     filters = {"metadata.location_id": location_id}
-    documents = database.query_air_quality(filters, limit=limit)
+    documents = database.query_air_quality(filters, limit=1)
 
     calculator = AQICalculator()
     current: dict[str, Any] | None = None
@@ -623,9 +615,7 @@ async def main(argv: Sequence[str] | None = None) -> None:
         if args.report:
             # Read-only summary of what is already stored: no fetch, no
             # pipeline cycle, no Datadog. Print and exit.
-            report = build_aqi_report(
-                database, args.location_id, args.report_limit
-            )
+            report = build_aqi_report(database, args.location_id)
             print(format_aqi_report(report))
             return
 

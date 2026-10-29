@@ -107,10 +107,16 @@ def main() -> int:
         result = asyncio.run(run_cycle(database, datadog, pipeline, 4946813))
         detail = (
             f"fetched={result.records_fetched} valid={result.records_valid} "
-            f"inserted={result.records_inserted} status={result.status} "
-            f"attempts={result.attempts}"
+            f"inserted={result.records_inserted} skipped_dedup={result.records_skipped} "
+            f"status={result.status} attempts={result.attempts}"
         )
-        if result.status == "running" and result.records_inserted > 0:
+        # PASS = healthy cycle: new inserts, OR every observation already
+        # stored (dedup gate, expected on every run after the first).
+        # A plain all-skipped cycle is running, not a failure.
+        if (
+            result.status == "running"
+            and (result.records_inserted > 0 or result.records_skipped > 0)
+        ):
             report(PASS, "pipeline:cycle", detail)
         elif result.incident is not None:
             report(WARN, "pipeline:cycle",

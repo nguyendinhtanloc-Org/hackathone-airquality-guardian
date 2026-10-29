@@ -438,6 +438,17 @@ class MongoDBClient:
         )
         return list(cursor)
 
+    def count_pending_quarantine(self) -> int:
+        """Records still waiting for replay (pending or in-flight).
+
+        Feeds the ``selfhealing.quarantine.count`` Datadog metric that the
+        "quarantine overflow" monitor (config/datadog/monitors.json)
+        queries; without it that monitor could never fire.
+        """
+        return self.quarantine_events.count_documents(
+            {"status": {"$in": ["pending", "in_flight"]}}
+        )
+
 
     def mark_quarantine_replayed(
         self, event_id: str

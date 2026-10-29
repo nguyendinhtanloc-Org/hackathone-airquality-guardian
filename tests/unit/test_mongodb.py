@@ -582,6 +582,16 @@ def test_query_pending_quarantine_requires_positive_limit(mongo_client):
     collections["quarantine_events"].find.assert_not_called()
 
 
+def test_count_pending_quarantine_counts_waiting_records(mongo_client):
+    database_client, _, collections = mongo_client
+    collections["quarantine_events"].count_documents.return_value = 3
+
+    assert database_client.count_pending_quarantine() == 3
+    collections["quarantine_events"].count_documents.assert_called_once_with(
+        {"status": {"$in": ["pending", "in_flight"]}}
+    )
+
+
 def test_mark_quarantine_replayed_updates_status(mongo_client):
     database_client, _, collections = mongo_client
     collection = collections["quarantine_events"]

@@ -119,6 +119,10 @@ class _FakeQuarantine:
                 return doc
         return None
 
+    def count_documents(self, filters: dict | None = None) -> int:
+        filters = filters or {}
+        return sum(1 for doc in self.documents if _matches(doc, filters))
+
     def update_one(self, filters: dict, update: dict, **_kwargs):
         for doc in self.documents:
             if _matches(doc, filters):

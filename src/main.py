@@ -234,6 +234,10 @@ async def run_cycle(
         "pipeline.records.failed": result.records_failed,
         "pipeline.fetch.latency": result.duration_seconds,
         "pipeline.incidents.count": len(incidents),
+        # Revives the "quarantine overflow" monitor in monitors.json:
+        # it queries selfhealing.quarantine.count which was never emitted
+        # before, so the monitor could never fire.
+        "selfhealing.quarantine.count": database.count_pending_quarantine(),
     }
     aqis = [
         value

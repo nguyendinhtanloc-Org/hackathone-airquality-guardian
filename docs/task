@@ -2,33 +2,41 @@
 
 2.11 — Apply Datadog
 
-Chưa xác nhận hoàn thành
-
-Kiểm tra script tạo dashboard và 3 monitors trên Datadog thật
+CÒN CHẠY THẬT: python scripts/apply_datadog.py (tạo 3 monitors) +
+python scripts/apply_dashboard.py, xác nhận trên UI Datadog.
+Đã fix: metric selfhealing.quarantine.count trước đây không ai emit →
+monitor #2 "quarantine overflow" là dead monitor (commit 1e91afc).
 
 2
 
 2.10 — MongoDB Time Series
 
-Đang làm dở
-
-Viết scripts/setup_timeseries.py, kiểm tra thiết kế collection và index
+HOÀN THÀNH (xác nhận live 29/10: 3 lần verify_live.py 5/5 OK trên
+Atlas thật, time-series + meta-scoped TTL chạy được, không còn crash
+code 72).
 
 3
 
 2.12 — Runtime Monitor
 
-Chưa hoàn thành
-
-Tích hợp tạo monitor khi có incident và xử lý auto-resolve
+HOÀN THÀNH (code + test, commit cc9029c): run_cycle gọi
+DatadogIntegrator.ensure_monitor() (ensure-once: GET theo tên, chưa
+có thì create, có thì no-op) chỉ khi chu kỳ có incident. Monitor
+"pipeline degraded" query pipeline.records.failed > 0 và AUTO-RESOLVE
+tự nhiên khi failed về 0 (native Datadog, không cần gọi resolve API).
+Template dùng chung với config/datadog/monitors.json nên runtime và
+apply_datadog.py quản lý CÙNG monitor, không sinh duplicate.
+Xác nhận thật: sau khi chạy apply_datadog.py, tạo incident (tắt
+OpenAQ/mock lỗi) rồi xem monitor fire trên Datadog.
 
 4
 
 2.13 — CLI Report
 
-Chưa hoàn thành
-
-Xây dựng --report để tổng hợp AQI
+HOÀN THÀNH (code + test, commit 50218f9 + 4c39cd6):
+python -m src.main --report in bảng AQI (pollutant | value | aqi |
+level) + thống kê lưu trữ, read-only (không fetch, không cycle).
+Xác nhận thật: python -m src.main --report với data đã có trong Atlas.
 
 5
 

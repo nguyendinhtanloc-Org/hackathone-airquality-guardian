@@ -105,3 +105,36 @@ COMMIT CẦN PUSH (cập nhật lần này, theo thứ tự mới → cũ):
   10. c908ca1  fix replay-dedup + AQI gauge fallback (main.py, test_replay_cli.py,
                test_main.py)
 Push từ Mac: git push origin data-pipeline
+
+---
+PIVOT AIRFLOW + DOCKER COMPOSE (31/10, Người 1) — deadline dời +1 tuần
+Quyết định nhóm: KHÔNG deploy cloud VM; Atlas + Datadog giữ nguyên (free
+cuộc thi cấp), phần còn lại chạy docker-compose local (1 máy).
+HOÀN THÀNH (commits 4465c99..9c2bac0):
+- B1: fetcher đọc OPENAQ_API_URL (env) → trỏ pipeline sang mock mà không
+  sửa code. SỬA LỖI KÈM: .env + .env.example đang có URL V2 CŨ
+  (v2/latest — dead 3 tháng vì biến chưa được đọc) → đã sửa thành v3.
+- B2: scripts/mock_openaq/server.py (stdlib, 0 dep): 6 cảm biến giống
+  trạm thật (4 fresh trôi timestamp mỗi poll + no2/co "stuck" fix
+  giống data thật -> dedup-skip tự nhiên). Công tắc POST /control:
+  fault=ok|500|401|timeout. 5 integration test HTTP THẬT (173 suite).
+- B3: docker-compose.yml (+postgres, airflow-init, airflow standalone,
+  mock_openaq; 2 service pipeline cũ giữ nguyên). DAG
+  dags/airquality_guardian.py (5 phút, run_cycle >> replay).
+  QUY TẮC THIẾT KẾ (đừng "sửa"): KHÔNG retries ở Airflow (engine
+  tự backoff 3 lần trong chu kỳ); chu kỳ degraded = task GREEN (data
+  đã được cứu vào quarantine, cảnh báo nằm ở monitor Datadog); replay
+  chạy mỗi chu kỳ vì idempotent.
+- B4: scripts/demo_selfhealing.py — story 5 bước hermetic (mock HTTP
+  thật + DB fake, KHÔNG cần Atlas/Docker), 19 checks, exit 0.
+  Runbook: docs/SELF_HEALING_DEMO.md (3 cửa sổ: Airflow UI + terminal
+  + Datadog; lệnh curl công tắc fault).
+CHẠY TRÊN MAC (việc của Người 2/đoàn):
+  1) git push origin data-pipeline (15+ commits chưa push)
+  2) docker compose up -d mock_openaq postgres airflow → UI :8080 admin/admin
+  3) Kịch bản demo theo docs/SELF_HEALING_DEMO.md (lần đầu có thể mất
+     5-10 phút build image apache/airflow ~1GB)
+  LƯU Ý: mock trong Docker bind 0.0.0.0 (ENV MOCK_OPENAQ_HOST) — đã
+  fix trong 9c2bac0, đừng revert. Airflow 2.10 (DAG dùng schedule=,
+  KHÔNG phải schedule_interval).
+CÒN LẠI: 2.14 docs, 2.8/C1 (quarantine read-only) — không chặn demo.

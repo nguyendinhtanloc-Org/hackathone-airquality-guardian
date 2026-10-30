@@ -16,6 +16,14 @@ def no_sleep():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _pin_fetcher_base_url(monkeypatch):
+    """A .env loaded by an earlier test (via src.main's load_dotenv) can
+    leak OPENAQ_API_URL into os.environ; pin it so fetchers built here
+    always hit the real v3 API shape the mocks answer to."""
+    monkeypatch.delenv("OPENAQ_API_URL", raising=False)
+
+
 def _instant_sleep():
     async def sleep(_seconds):
         return None

@@ -364,6 +364,7 @@ async def run_cycle(
     datadog: DatadogIntegrator | None,
     pipeline: Pipeline,
     location_id: int,
+    extra_tags: Sequence[str] = (),
 ) -> PipelineRunResult:
     """Run one fetch → validate → persist → observe cycle.
 
@@ -408,6 +409,7 @@ async def run_cycle(
     incidents = [
         inc.to_dict() for inc in pipeline.self_healing_engine.incidents
     ]
+    attempts = result.attempts if isinstance(result.attempts, int) else 1
     metrics: dict[str, int | float] = {
         "pipeline.records.fetched": result.records_fetched,
         "pipeline.records.valid": result.records_valid,
@@ -420,7 +422,26 @@ async def run_cycle(
         # it queries selfhealing.quarantine.count which was never emitted
         # before, so the monitor could never fire.
         "selfhealing.quarantine.count": database.count_pending_quarantine(),
+        # Dashboard v2: retry / status / throughput signals.
+        "pipeline.attempts": attempts,
+        "selfhealing.retry.total": max(attempts - 1, 0),
+        "pipeline.status.degraded": 1 if result.status == "degraded" else 0,
+        "pipeline.cycle.count": 1,
+        "pipeline.incidents.retryable": sum(
+            1 for inc in incidents if inc.get("retryable")
+        ),
+        "pipeline.incidents.permanent": sum(
+            1 for inc in incidents if not inc.get("retryable")
+        ),
     }
+    # Per-pollutant readings and AQI for the pollutant breakdown widgets.
+    for document in result.documents:
+        for key, value in document["measurements"].items():
+            if not key.endswith("_unit") and isinstance(value, (int, float)):
+                metrics[f"datavalue.measurement.{key}"] = value
+        for key, value in document["aqi"].items():
+            if key.endswith("_aqi") and isinstance(value, (int, float)):
+                metrics[f"datavalue.aqi.{key[:-4]}"] = value
     aqis = [
         value
         for document in result.documents
@@ -453,9 +474,11 @@ async def run_cycle(
             metric_result = datadog.send_metrics(
                 metrics,
                 tags=[
-                    "env:dev",
+                    f"env:{os.getenv('DD_ENV', 'dev')}",
                     "service:airquality-pipeline",
                     f"location_id:{result.location_id}",
+                    f"status:{result.status}",
+                    *extra_tags,
                 ],
             )
             logger.info("Datadog accepted metrics: {}", metric_result)
@@ -473,6 +496,9 @@ async def run_cycle(
                     "records_failed": result.records_failed,
                     "duration_seconds": result.duration_seconds,
                     "incidents": len(incidents),
+                    "status": result.status,
+                    "attempts": result.attempts,
+                    "ddtags": ",".join(extra_tags),
                 },
                 status="error" if incidents else "info",
             )
@@ -503,6 +529,7 @@ async def run_cycle(
                         "attempt": incident["attempt"],
                         "location_id": result.location_id,
                         "created_at": created_at,
+                        "ddtags": ",".join(extra_tags),
                     },
                     status="error",
                 )

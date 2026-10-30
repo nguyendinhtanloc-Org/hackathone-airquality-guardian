@@ -214,13 +214,17 @@ def test_dashboard_and_monitor_templates_are_valid_api_payloads():
     )
 
     assert dashboard["layout_type"] == "ordered"
-    assert len(dashboard["widgets"]) == 3
-
-    widget_types = [
-        widget["definition"]["type"]
-        for widget in dashboard["widgets"]
-    ]
-    assert widget_types == ["timeseries", "timeseries", "query_value"]
+    assert {v["name"] for v in dashboard["template_variables"]} == {
+        "env", "location_id", "scenario",
+    }
+    # v2 layout: every top-level widget is a group of real widgets.
+    assert all(w["definition"]["type"] == "group" for w in dashboard["widgets"])
+    inner_types = {
+        inner["definition"]["type"]
+        for group in dashboard["widgets"]
+        for inner in group["definition"]["widgets"]
+    }
+    assert {"timeseries", "query_value", "log_stream"} <= inner_types
 
     assert len(monitors) == 3
     assert all(

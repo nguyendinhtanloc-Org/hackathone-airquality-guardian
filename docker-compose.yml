@@ -1,4 +1,18 @@
+# AirQuality Guardian — local stack (no cloud VM; only Atlas + Datadog
+# stay external, per the hackathon's free-tier grants).
+#
+#   docker compose up airflow      # demo mode: Airflow + mock OpenAQ
+#   docker compose up pipeline     # one-shot real cycle (unchanged from before)
+#
+# Airflow UI:  http://localhost:8080  (admin / admin, created by airflow-init)
+# Mock OpenAQ: http://localhost:8000  (fault switch below)
+#
+# Self-healing demo (the choreography is in docs/SELF_HEALING_DEMO.md):
+#   curl -X POST localhost:8000/control -d '{"fault": "500"}'
+#   curl -X POST localhost:8000/control -d '{"fault": "ok"}'
+
 services:
+  # ---- existing one-shot pipeline (unchanged behaviour) -------------
   pipeline:
     build: .
     container_name: airquality-pipeline
@@ -9,14 +23,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
 
-  # Development service
+  # Development service (hot-reload src/)
   pipeline-dev:
     build: .
     container_name: airquality-pipeline-dev
@@ -28,3 +36,78 @@ services:
     command: python -m src.main
     profiles:
       - dev
+
+  # ---- mock OpenAQ (the self-healing demo lever) --------------------
+  mock_openaq:
+    build:
+      context: .
+      dockerfile: Dockerfile.mock-openaq
+    container_name: airquality-mock-openaq
+    ports:
+      - "8000:8000"
+
+  # ---- Airflow metadata DB ------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: airquality-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-shot: migrate DB + create admin user before the server starts.
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airquality-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &airflow-env
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres:5432/airflow
+      # Point the pipeline at the mock. Compose env wins over the
+      # mounted .env (load_dotenv never overrides set vars), so this is
+      # how demo mode is selected without editing .env. Delete this
+      # line to run against real OpenAQ.
+      OPENAQ_API_URL: http://mock_openaq:8000/v3
+      PIPELINE_LOCATION_ID: "4946813"
+    command: >
+      bash -c "airflow db migrate
+               && (airflow users create --role Admin --username admin
+                   --password admin --email admin@example.com
+                   --firstname Admin --lastname User || true)"
+
+  # Airflow 2.10 `standalone` = webserver + scheduler + local worker
+  # in one process. No Celery needed at this scale.
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: airquality-airflow
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      mock_openaq:
+        condition: service_started
+    environment:
+      <<: *airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__WEBSERVER__PORT: "8080"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./.env:/opt/airflow/.env
+    command: airflow standalone
+
+volumes:
+  airflow-pgdata:

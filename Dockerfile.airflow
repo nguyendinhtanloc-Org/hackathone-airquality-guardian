@@ -1,0 +1,22 @@
+# Airflow (webserver + scheduler + local worker) WITH the pipeline code,
+# so DAG tasks can run `python -m src.main` in-container.
+#
+# Base: the official Airflow 2.10 image (python3.11, venv at
+# /opt/airflow/venv already on PATH). We add:
+#   - the pipeline's requirements (pymongo, httpx, loguru, ...)
+#   - the src/ tree, importable via PYTHONPATH=/opt/airflow
+#   - psycopg2-binary for the postgres metadata DB
+
+FROM apache/airflow:2.10.5-python3.11
+
+COPY requirements.txt /tmp/pipeline-requirements.txt
+RUN /opt/airflow/venv/bin/pip install --no-cache-dir -r /tmp/pipeline-requirements.txt \
+    && /opt/airflow/venv/bin/pip install --no-cache-dir psycopg2-binary
+
+COPY src/ /opt/airflow/src/
+COPY .env.example /opt/airflow/.env.example
+
+ENV PYTHONPATH=/opt/airflow
+
+# No Airflow examples polluting the DAG list for the demo.
+ENV AIRFLOW__CORE__LOAD_EXAMPLES=false

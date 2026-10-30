@@ -79,12 +79,14 @@ TIMELINE — TÌNH TRẠNG CÔNG VIỆC (cập nhật 29/10, sau step 1–4)
      read-only (document) hoặc xóa; giữ query_pending_quarantine để
      tra cứu nếu cần. Test cho mỗi lần xóa.
 
-7. BLOCKER — Xoay password Atlas ...... [x]
-   Credential thật nằm trong git history (PR #6). Trước demo/submit:
-     1) Atlas Console → Users & Security → đổi password user DB.
-     2) Cập nhật .env (bị gitignore, không vào history):
-        MONGODB_URI="mongodb+srv://user:PASSWORD_MOI@cluster.../?appName=..."
-     3) Chạy lại verify_live.py → 5/5 OK.
+7. BLOCKER — Xoay password Atlas ...... [H] (30/10)
+   ĐÃ XOAY: user phuongdinhhoang18_db_user (Reset Password trong
+   Atlas Users and Security). .env đã cập nhật URI + password mới.
+   verify_live.py chạy lại 30/10: 5/5 OK (ping, dedup, chu kỳ
+   inserted=4 skipped_dedup=2, Datadog accept) → password trong
+   git history chính thức vô hiệu.
+   NÂNG CẤP GHI NHẬN: pm25 đo 10-30T03:20 = 74.84 µg/m³ (AQI 161,
+   mức UNHEALTHY #FF0000) — data thật, không phải bug.
 
 TÌNH TRẠNG SUITE: 164 passed (unit + integration + e2e).
 

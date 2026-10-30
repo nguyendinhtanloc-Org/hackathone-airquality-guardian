@@ -5,4 +5,7 @@ COPY scripts/mock_openaq/server.py /app/server.py
 WORKDIR /app
 
 EXPOSE 8000
+# Container must listen on all interfaces so sibling containers
+# (Airflow) can reach it via the compose network name.
+ENV MOCK_OPENAQ_HOST=0.0.0.0
 CMD ["python", "server.py"]

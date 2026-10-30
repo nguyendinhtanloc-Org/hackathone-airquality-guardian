@@ -29,8 +29,9 @@ Fault switch (the demo lever):
     ok    -> back to fresh readings
 
 Run it:
-    python scripts/mock_openaq/server.py            # default :8000
+    python scripts/mock_openaq/server.py            # default 127.0.0.1:8000
     MOCK_OPENAQ_PORT=8001 python scripts/mock_openaq/server.py
+    MOCK_OPENAQ_HOST=0.0.0.0 python scripts/mock_openaq/server.py   # for Docker
 """
 
 import json

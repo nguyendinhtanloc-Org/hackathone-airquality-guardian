@@ -40,7 +40,7 @@ dag = DAG(
     # 5 min matches the standalone scheduler default; Airflow fires a
     # new run as soon as the previous one ends, so the effective cadence
     # is max(5 min, cycle duration).
-    schedule_interval=os.getenv("AIRFLOW_SCHEDULE", "*/5 * * * *"),
+    schedule=os.getenv("AIRFLOW_SCHEDULE", "*/5 * * * *"),
     catchup=False,
     tags=["airquality", "hackathon"],
     default_args={

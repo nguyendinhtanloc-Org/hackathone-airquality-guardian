@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
+from pymongo.errors import DuplicateKeyError
 
 from src.database.mongodb import MongoDBClient
 
@@ -13,6 +14,7 @@ def mongo_client():
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -23,18 +25,212 @@ def mongo_client():
     ), client, collections
 
 
+def _build_client(monkeypatch, data_retention_days: str):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", data_retention_days)
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    return MongoDBClient(database_name="test_airquality", client=client), collections
+
+
+
 def test_initialization_creates_required_indexes(mongo_client):
     _, _, collections = mongo_client
 
-    collections["air_quality"].create_index.assert_has_calls(
-        [call("timestamp"), call("metadata.location_id")]
+    indexes = collections["air_quality"].create_index.call_args_list
+
+    assert indexes[1] == call("metadata.location_id")
+
+    dedup_indexes = collections[
+        "air_quality_dedup"
+    ].create_index.call_args_list
+
+    assert call(
+        [("dedup_key", 1)],
+        unique=True,
+        name="air_quality_dedup_key_idx",
+    ) in dedup_indexes
+
+    # Default DATA_RETENTION_DAYS=30 -> the dedup store gets a TTL index so
+    # it cannot outlive (or outgrow) the observations it deduplicates.
+    assert call(
+        "created_at",
+        expireAfterSeconds=30 * 86400,
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup_indexes
+
+    q_indexes = collections["quarantine_events"].create_index.call_args_list
+
+    assert call(
+        [("status", 1), ("created_at", 1)],
+        name="pending_quarantine_idx",
+    ) in q_indexes
+
+    assert call(
+        [("status", 1), ("in_flight_at", 1)],
+        name="in_flight_quarantine_idx",
+    ) in q_indexes
+
+    assert call("expires_at") in q_indexes
+
+
+def test_data_retention_creates_ttl_index_on_timestamp(monkeypatch):
+    # Without a TTL, air_quality grows without bound on a long-running
+    # deployment; DATA_RETENTION_DAYS finally drives one.
+    _, collections = _build_client(monkeypatch, "30")
+    indexes = collections["air_quality"].create_index.call_args_list
+    assert indexes[0] == call("timestamp", expireAfterSeconds=30 * 86400)
+
+
+def test_data_retention_zero_creates_plain_timestamp_index(monkeypatch):
+    """0 means keep forever: no expireAfterSeconds, plain lookup index."""
+    _, collections = _build_client(monkeypatch, "0")
+    indexes = collections["air_quality"].create_index.call_args_list
+    assert indexes[0] == call("timestamp")
+
+
+def test_dedup_store_gets_ttl_aligned_to_data_retention(monkeypatch):
+    # With retention, the dedup marker store reaps on the same horizon as
+    # the data it dedups, instead of accumulating forever.
+    _, collections = _build_client(monkeypatch, "30")
+    dedup = collections["air_quality_dedup"].create_index.call_args_list
+    assert call(
+        "created_at",
+        expireAfterSeconds=30 * 86400,
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup
+
+def test_timeseries_layout_gets_meta_scoped_ttl_and_no_meta_index(monkeypatch):
+    # Regression: Atlas rejects a PLAIN TTL index on a time-series
+    # collection ("TTL indexes on time-series collections require a
+    # partialFilterExpression on the metaField") -> startup crash. With a
+    # detected time-series layout the code must issue the meta-scoped
+    # command and skip the non-time/meta index.
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database.list_collections.side_effect = lambda **_kw: iter(
+        [{"name": "air_quality", "type": "timeseries",
+          "options": {"timeseries": {
+              "timeField": "timestamp",
+              "metaField": "metadata.location_id",
+          }}}]
     )
+
+    from src.database.mongodb import MongoDBClient
+    MongoDBClient(database_name="test_airquality", client=client)
+
+    calls = collections["air_quality"].create_index.call_args_list
+    assert call(
+        "timestamp",
+        expireAfterSeconds=30 * 86400,
+        name="air_quality_ttl_idx",
+        partialFilterExpression={"metadata.location_id": 4946813},
+    ) in calls
+    # non-time/meta indexes are not issued on a time-series collection
+    assert call("metadata.location_id") not in calls
+
+
+def test_regular_layout_ignores_timeseries_detection(monkeypatch):
+    # listCollections says it is a regular collection -> the plain TTL
+    # index path is taken exactly as before the detection was added.
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database.list_collections.side_effect = lambda **_kw: iter(
+        [{"name": "air_quality", "type": "collection"}]
+    )
+
+    from src.database.mongodb import MongoDBClient
+    MongoDBClient(database_name="test_airquality", client=client)
+
+    calls = collections["air_quality"].create_index.call_args_list
+    assert call("timestamp", expireAfterSeconds=30 * 86400) in calls
+    assert call("metadata.location_id") in calls
+
+
+def test_dedup_store_plain_index_when_data_kept_forever(monkeypatch):
+    _, collections = _build_client(monkeypatch, "0")
+    dedup = collections["air_quality_dedup"].create_index.call_args_list
+    assert call(
+        [("created_at", 1)],
+        name="air_quality_dedup_created_at_idx",
+    ) in dedup
+    for c in dedup:
+        assert c.kwargs.get("expireAfterSeconds") is None or c.args[0] != "created_at"
+
+
+def test_explicit_data_retention_days_param_wins_over_env(monkeypatch):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "0")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    MongoDBClient(
+        database_name="test_airquality",
+        client=client,
+        data_retention_days=7,
+    )
+    assert collections["air_quality"].create_index.call_args_list[0] == call(
+        "timestamp", expireAfterSeconds=7 * 86400
+    )
+
+
+def test_negative_data_retention_days_rejected(monkeypatch):
+    monkeypatch.setenv("DATA_RETENTION_DAYS", "-1")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    with pytest.raises(ValueError, match="DATA_RETENTION_DAYS must be >= 0"):
+        MongoDBClient(database_name="test_airquality", client=client)
 
 
 def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     monkeypatch,
 ):
     monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.delenv("MONGODB_DATABASE_NAME", raising=False)
+    # Keep the test hermetic: the constructor's load_dotenv() would
+    # otherwise re-populate MONGODB_DATABASE_NAME from the project's real
+    # .env and take the alias path instead of get_default_database().
+    monkeypatch.setattr("src.database.mongodb.load_dotenv", lambda *a, **k: None)
     client = MagicMock()
     default_database = MagicMock()
     default_database.name = "airquality"
@@ -43,6 +239,7 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     client.__getitem__.return_value = database
     collections = {
         "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
         "quarantine_events": MagicMock(),
         "pipeline_status": MagicMock(),
     }
@@ -58,6 +255,32 @@ def test_initialization_uses_database_from_uri_when_env_database_is_missing(
     assert database_client.database is database
 
 
+def test_database_name_alias_mongodb_database_name(monkeypatch):
+    """MONGODB_DATABASE_NAME is what the Atlas onboarding console writes
+    into .env; it must be honored as an alias so a verbatim Atlas copy
+    works without renaming the variable."""
+    monkeypatch.delenv("MONGODB_DATABASE", raising=False)
+    monkeypatch.setenv("MONGODB_DATABASE_NAME", "atlas_db")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+
+    database_client = MongoDBClient(
+        uri="mongodb+srv://user:pass@host/otherdb",
+        client=client,
+    )
+
+    client.__getitem__.assert_called_once_with("atlas_db")
+    assert database_client.database is database
+
+
 def test_insert_air_quality_returns_inserted_id(mongo_client):
     database_client, _, collections = mongo_client
     document = {
@@ -70,7 +293,141 @@ def test_insert_air_quality_returns_inserted_id(mongo_client):
     inserted_id = database_client.insert_air_quality(document)
 
     assert inserted_id == "record-1"
-    collections["air_quality"].insert_one.assert_called_once_with(document)
+    # The stored record is the caller's document plus a stable dedup_key.
+    stored = collections["air_quality"].insert_one.call_args.args[0]
+    assert stored["dedup_key"] == MongoDBClient._dedup_key(document)
+    assert stored["metadata"] == document["metadata"]
+
+
+def test_dedup_key_is_stable_for_the_same_observation():
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5, "o3": 40.0},
+        "aqi": {"pm25_aqi": 52},
+    }
+    other_event = dict(document, event_id="different-uuid")
+    assert MongoDBClient._dedup_key(document) == MongoDBClient._dedup_key(other_event)
+
+
+def test_dedup_key_differs_when_values_differ():
+    base = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    assert MongoDBClient._dedup_key(base) != MongoDBClient._dedup_key(
+        dict(base, measurements={"pm25": 13.0})
+    )
+
+
+def test_insert_air_quality_is_idempotent_on_duplicate(mongo_client):
+    database_client, _, collections = mongo_client
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    # Marker-first dedup: the gate is the unique index on air_quality_dedup.
+    # A re-emitted observation collides on the marker, so the time-series
+    # collection is never touched and the call is a no-op.
+    collections["air_quality_dedup"].insert_one.side_effect = (
+        DuplicateKeyError("duplicate")
+    )
+
+    assert database_client.insert_air_quality(document) is None
+    collections["air_quality"].insert_one.assert_not_called()
+
+
+def test_insert_air_quality_rolls_back_marker_when_time_series_fails(
+    mongo_client,
+):
+    """If the observation write fails, the marker is rolled back so the
+    next cycle can retry instead of being permanently blocked."""
+    database_client, _, collections = mongo_client
+    document = {
+        "metadata": {"location_id": 123},
+        "timestamp": datetime(2026, 10, 19, tzinfo=timezone.utc),
+        "measurements": {"pm25": 12.5},
+    }
+    collections["air_quality"].insert_one.side_effect = RuntimeError(
+        "time-series down"
+    )
+    dedup_inserted = collections["air_quality_dedup"].insert_one
+
+    with pytest.raises(RuntimeError, match="time-series down"):
+        database_client.insert_air_quality(document)
+
+    dedup_inserted.assert_called_once()
+    marker = dedup_inserted.call_args.args[0]
+    rolled_back = collections["air_quality_dedup"].delete_one.call_args.args[0]
+    # The marker that was just inserted is the one rolled back, by key.
+    assert rolled_back == {"dedup_key": marker["dedup_key"]}
+
+
+def _bare_database_client() -> tuple:
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    return MongoDBClient(database_name="test_airquality", client=client), collections
+
+
+def test_quarantine_retention_days_follows_env_at_construction(monkeypatch):
+    # Regression: retention was a class attribute read at import time, so
+    # .env values were silently ignored. Now it is read per instance.
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "30")
+    database_client, _ = _bare_database_client()
+    assert database_client.quarantine_retention_days == 30
+
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "2")
+    database_client, _ = _bare_database_client()
+    assert database_client.quarantine_retention_days == 2
+
+
+def test_quarantine_retention_days_explicit_wins_over_env(monkeypatch):
+    monkeypatch.setenv("QUARANTINE_RETENTION_DAYS", "30")
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    database_client = MongoDBClient(
+        database_name="test_airquality",
+        client=client,
+        quarantine_retention_days=9,
+    )
+    assert database_client.quarantine_retention_days == 9
+
+
+def test_quarantine_retention_days_must_be_positive():
+    client = MagicMock()
+    database = MagicMock()
+    client.__getitem__.return_value = database
+    collections = {
+        "air_quality": MagicMock(),
+        "air_quality_dedup": MagicMock(),
+        "quarantine_events": MagicMock(),
+        "pipeline_status": MagicMock(),
+    }
+    database.__getitem__.side_effect = collections.__getitem__
+    with pytest.raises(ValueError, match="must be > 0"):
+        MongoDBClient(
+            database_name="test_airquality",
+            client=client,
+            quarantine_retention_days=0,
+        )
 
 
 def test_insert_quarantine_stores_pending_record(mongo_client):
@@ -186,3 +543,118 @@ def test_close_closes_mongo_client(mongo_client):
     database_client.close()
 
     client.close.assert_called_once_with()
+    
+    
+
+def test_query_pending_quarantine_sorts_oldest_first_and_limits(
+    mongo_client,
+):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    expected = [
+        {"event_id": "event-1", "status": "pending"},
+        {"event_id": "event-2", "status": "pending"},
+    ]
+
+    cursor = MagicMock()
+    cursor.sort.return_value.limit.return_value = expected
+    collection.find.return_value = cursor
+
+    result = database_client.query_pending_quarantine(limit=2)
+
+    assert result == expected
+
+    collection.find.assert_called_once_with({"status": "pending"})
+    cursor.sort.assert_called_once_with("created_at", 1)
+    cursor.sort.return_value.limit.assert_called_once_with(2)
+
+
+def test_query_pending_quarantine_requires_positive_limit(mongo_client):
+    database_client, _, collections = mongo_client
+
+    with pytest.raises(
+        ValueError,
+        match="limit must be a positive integer",
+    ):
+        database_client.query_pending_quarantine(limit=0)
+
+    collections["quarantine_events"].find.assert_not_called()
+
+
+def test_count_pending_quarantine_counts_waiting_records(mongo_client):
+    database_client, _, collections = mongo_client
+    collections["quarantine_events"].count_documents.return_value = 3
+
+    assert database_client.count_pending_quarantine() == 3
+    collections["quarantine_events"].count_documents.assert_called_once_with(
+        {"status": {"$in": ["pending", "in_flight"]}}
+    )
+
+
+def test_mark_quarantine_replayed_updates_status(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+
+    with patch("src.database.mongodb.datetime") as mock_datetime:
+        mock_datetime.now.return_value = resolved_at
+
+        database_client.mark_quarantine_replayed("event-1")
+
+    collection.update_one.assert_called_once()
+
+    query, update = collection.update_one.call_args.args
+
+    assert query == {
+        "event_id": "event-1",
+        "status": "pending",
+    }
+    assert update["$set"]["status"] == "replayed"
+    assert update["$set"]["resolved_at"] == resolved_at
+    assert update["$inc"]["retry_count"] == 1
+    collection = collections["quarantine_events"]
+
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    database_client._now = lambda: resolved_at
+
+    database_client.mark_quarantine_replayed("event-1")
+
+
+def test_mark_quarantine_failed_updates_status_and_error(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    error_message = "Replay failed: timeout"
+    resolved_at = datetime(2026, 10, 25, tzinfo=timezone.utc)
+    database_client._now = lambda: resolved_at
+
+    database_client.mark_quarantine_failed(
+        "event-1",
+        error_message=error_message,
+    )
+
+    collection.update_one.assert_called_once()
+
+    query, update = collection.update_one.call_args.args
+
+    assert query == {
+    "event_id": "event-1",
+    "status": "pending",
+    }  
+    assert update["$set"]["status"] == "failed"
+    assert update["$set"]["error_message"] == error_message
+    assert update["$set"]["resolved_at"] == resolved_at
+    
+def test_mark_quarantine_replayed_handles_missing_event(mongo_client):
+    database_client, _, collections = mongo_client
+    collection = collections["quarantine_events"]
+
+    collection.update_one.return_value.matched_count = 0
+
+    # Thay bằng exception hoặc kết quả mong đợi
+    # theo contract của mark_quarantine_replayed.
+    database_client.mark_quarantine_replayed("missing-event")
+
+    collection.update_one.assert_called_once()

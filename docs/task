@@ -1,23 +1,75 @@
-□ Đọc tài liệu MongoDB Time Series:
-   - https://www.mongodb.com/docs/manual/core/timeseries/
-   - Ví dụ về Time Series collections
+TIMELINE — TÌNH TRẠNG CÔNG VIỆC & TASK BÀN GIAO (Cập nhật 31/10/2026)
 
-□ Đọc tài liệu Datadog:
-   - Dashboard docs
-   - Monitors docs
-   - Log management docs
+Mục tiêu nộp bài: 23:59 ngày 01/11/2026
+Yêu cầu công nghệ bắt buộc: MongoDB (Time Series) + Datadog (Dashboard, Monitors, Logs) + Self-Healing Pipeline
+Trạng thái Test Suite: 164/164 tests passed (Unit, Integration, E2E)
 
-□ Setup MongoDB Atlas (free tier):
-   - Tạo account
-   - Tạo cluster (M0 Sandbox)
-   - Tạo database: airquality
-   - Tạo collections:
-     * air_quality (Time Series)
-     * quarantine_events
-     * pipeline_status
+================================================================================
+I. TỔNG HỢP TIẾN ĐỘ DỰ ÁN (NGƯỜI 1 & NGƯỜI 2)
+================================================================================
 
-□ Test kết nối từ local
+[H] = Đã hoàn thành (Code + Unit/Integration/E2E tests xanh 100%)
+[L] = Code xong, đã xác nhận hoặc cần chạy bước apply trên hạ tầng live thật
+[!] = Việc cần làm ngay trước giờ nộp bài (Deploy cloud, Demo, Xoay password)
 
-□ Commit
+1. NGƯỜI 1: DATA PIPELINE & RUNTIME [HOÀN THÀNH 100%]
+   - 2.1  Self-Healing Engine tích hợp Pipeline run_once: bắt lỗi, phân loại, incident tracking [H]
+   - 2.2  Retry loop + Exponential backoff (10s -> 20s -> 40s), không spam API [H]
+   - 2.3  Scheduler run_loop() (--loop), graceful shutdown qua SIGTERM/SIGINT [H]
+   - 2.4  Vòng đời pipeline_status (_id: "current") ghi nhận running/degraded/stopped [H]
+   - 2.5  Telemetry & Incident logging lên Datadog (status=error, tags, metrics) [H]
+   - 2.6  CLI --replay phục hồi bản ghi cách ly từ MongoDB [H]
+   - 2.1c Chống trùng lặp dữ liệu (Dedup SHA-256 marker-first) an toàn tuyệt đối [H]
+   - 2.1d Trần số lần replay (MAX_REPLAY_ATTEMPTS=5) chống loop vô hạn [H]
+   - 2.7  CI/CD GitHub Actions + Bộ E2E tests 4 kịch bản phục hồi lỗi [H]
 
-───────────────────────────────────────────────────
+2. NGƯỜI 2: DATA PLATFORM, OBSERVABILITY & OPS [HOÀN THÀNH CODE - CHỜ APPLY & DEPLOY]
+   - 2.10 MongoDB Time Series Collection [H]:
+          Đã cấu hình air_quality (timeField: timestamp, metaField: metadata.location_id).
+          Đã giải quyết lỗi Atlas code 72 (partialFilterExpression cho TTL index).
+   - 2.11 Datadog Setup Scripts [L]:
+          scripts/apply_datadog.py (tạo 3 monitors) và scripts/apply_dashboard.py (dashboard 12 widgets).
+          -> Cần chạy trên môi trường có mạng với Datadog API/App Key.
+   - 2.12 Runtime Monitor Ensure-Once [H]:
+          Tự động đảm bảo degraded monitor tồn tại khi có sự cố, auto-resolve khi hết lỗi.
+   - 2.13 CLI Report [H]:
+          Lệnh `python -m src.main --report` đọc dữ liệu mới nhất + tổng hợp thống kê theo EPA AQI.
+   - 2.8 / C1 Quarantine Lifecycle [H]:
+          Đã thống nhất QuarantineManager (A) là nguồn ghi và quản lý duy nhất (CAS claim pending -> in_flight -> replayed/failed).
+   - 2.14 Documentation [H]:
+          Đã bổ sung bộ tài liệu hoàn chỉnh (docs/DATADOG.md, docs/DATA_MODEL.md, docs/SELF_HEALING.md, README.md).
+
+================================================================================
+II. NHỮNG ĐIỂM CẦN CHỈNH SỬA / THỰC HIỆN NGAY CHO DEADLINE 01/11
+================================================================================
+
+1. [!] ÁP DỤNG DATADOG THẬT (Mất ~3 phút):
+   Chạy 2 lệnh sau để tạo Dashboard và 3 Monitors trên Datadog:
+     python scripts/apply_dashboard.py
+     python scripts/apply_datadog.py
+
+2. [!] DEPLOY LÊN CLOUD (Mục tiêu bắt buộc của người dùng - Mất ~15 phút):
+   - Nền tảng khuyến nghị: Render / Railway (hỗ trợ container hoặc Python background worker).
+   - Start Command: `python -m src.main --loop`
+   - Khai báo các Environment Variables từ .env lên Dashboard Cloud:
+       MONGODB_URI, MONGODB_DATABASE, OPENAQ_API_KEY, OPENAQ_API_URL,
+       DATADOG_API_KEY, DATADOG_APP_KEY, DATADOG_SITE,
+       FETCH_INTERVAL_SECONDS=300, MAX_RETRIES=3, RETRY_BACKOFF_SECONDS=10
+   - Chi tiết xem tại `docs/DEPLOY.md`.
+
+3. [!] BẢO MẬT & XOAY MẬT KHẨU ATLAS (Mất ~5 phút):
+   - Mật khẩu DB cũ từng xuất hiện trong git commit trước đây.
+   - Trước khi nộp bài: Vào MongoDB Atlas Console -> Database Access -> Đổi mật khẩu.
+   - Cập nhật lại MONGODB_URI trong file .env và trên Cloud config.
+   - Chạy kiểm tra: `python scripts/verify_live.py` (phải đạt 5/5 OK).
+
+4. [!] QUAY VIDEO DEMO THEO KỊCH BẢN (docs/DEMO.md - Mất ~30 phút):
+   - Mở màn hình Datadog Dashboard + Terminal.
+   - Dùng script có sẵn: `python scripts/simulate.py` để trình diễn 11 kịch bản lỗi mà không cần hack code.
+   - Video ~7-10 phút giới thiệu: Bài toán -> Dữ liệu thật -> Self-healing (retry, quarantine, replay) -> Dashboard Datadog.
+
+================================================================================
+III. KNOWN LIMITATIONS ĐƯỢC TÀI LIỆU HÓA (ĐỂ GIẢI TRÌNH VỚI GIÁM KHẢO)
+================================================================================
+1. Dữ liệu trạm Hà Nội 4946813 từ OpenAQ hiện bị đơ 2 cảm biến NO2 và CO (trả dữ liệu cũ). Hệ thống phát hiện và dedup tự động (skipped_dedup=2).
+2. TTL index trên Time Series: Atlas yêu cầu partialFilterExpression trên metaField (đã xử lý qua biến AIR_QUALITY_TTL_META).

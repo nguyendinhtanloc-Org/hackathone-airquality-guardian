@@ -137,6 +137,26 @@ class DatadogIntegrator:
         response.raise_for_status()
         return response.json()
 
+    def ensure_monitor(self, name: str, template: Mapping[str, Any]) -> Any:
+        """Create the monitor named ``name`` if it does not exist yet.
+
+        Ensure-once semantics: the pipeline calls this when it hits an
+        incident; the GET-by-name lookup makes repeated calls a no-op, so
+        re-running the pipeline never stacks duplicate monitors. Returns
+        the monitor id (existing or newly created).
+        """
+        response = self.client.get(
+            "/api/v1/monitor",
+            headers=self._headers(require_app_key=True),
+            params={"name": name, "page": "0"},
+        )
+        response.raise_for_status()
+        for existing in response.json():
+            if isinstance(existing, dict) and existing.get("name") == name:
+                return existing.get("id")
+        created = self.create_monitor(template)
+        return created.get("id")
+
     def close(self) -> None:
         """Close the underlying HTTP client."""
         self.client.close()

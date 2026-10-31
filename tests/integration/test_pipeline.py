@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -7,6 +7,20 @@ from src.fetcher.fetcher import DataFetcher
 from src.pipeline import Pipeline
 from src.self_healing.engine import SelfHealingEngine
 from src.validation.validator import DataValidator
+
+
+@pytest.fixture(autouse=True)
+def no_sleep():
+    """Keep retry backoff from actually waiting during the tests."""
+    with patch("src.pipeline.asyncio.sleep", new=_instant_sleep()):
+        yield
+
+
+def _instant_sleep():
+    async def sleep(_seconds):
+        return None
+
+    return sleep
 
 
 class MockOpenAQClient:
@@ -78,13 +92,16 @@ async def test_fetch_validate_and_persist_flow(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_fetch_is_not_silently_treated_as_success():
     fetcher = MagicMock(spec=DataFetcher)
-    fetcher.fetch.return_value = None
+    fetcher.fetch.side_effect = ConnectionError("connection reset")
     database = MagicMock(spec=MongoDBClient)
     pipeline = Pipeline(fetcher, DataValidator(), database)
 
-    with pytest.raises(RuntimeError, match="fetch failed"):
-        await pipeline.run_once()
+    result = await pipeline.run_once()
 
+    assert result.incident is not None
+    assert result.status == "degraded"
+    assert result.records_inserted == 0
+    assert result.incident.error_type == "ConnectionError"
     database.insert_air_quality.assert_not_called()
 
 
@@ -117,9 +134,17 @@ async def test_pipeline_rejects_measurement_without_timestamp():
         ]
     }
     database = MagicMock(spec=MongoDBClient)
-    pipeline = Pipeline(fetcher, DataValidator(), database)
+    pipeline = Pipeline(
+        fetcher, DataValidator(), database, backoff_seconds=0
+    )
 
-    with pytest.raises(ValueError, match="timestamp is required"):
-        await pipeline.run_once()
+    # A bad timestamp degrades the run instead of crashing the caller:
+    # nothing is stored and the incident is surfaced on the result.
+    result = await pipeline.run_once()
 
+    assert result.status == "degraded"
+    assert result.records_fetched == 1
+    assert result.records_inserted == 0
+    assert result.incident is not None
+    assert result.incident.component == "database"
     database.insert_air_quality.assert_not_called()

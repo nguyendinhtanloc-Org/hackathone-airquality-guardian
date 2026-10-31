@@ -1,162 +1,120 @@
 # AirQuality Guardian
 
-> Self-Healing Data Pipeline cho Real-Time Air Quality Monitoring
+> **Self-Healing Data Pipeline cho Real-Time Air Quality Monitoring**  
+> Dự án tham gia Hackathon — Tích hợp **MongoDB Atlas (Time Series)** & **Datadog Observability**.
 
-## Giới thiệu
+[![CI Pipeline](https://github.com/YOUR_USERNAME/airquality-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/airquality-guardian/actions)
 
-Hệ thống giám sát chất lượng không khí tại Hà Nội sử dụng dữ liệu từ OpenAQ với khả năng tự phát hiện và tự phục hồi khi xảy ra sự cố.
+---
 
-## Điểm nổi bật
+## 1. Giới thiệu
 
-- **Self-Healing Pipeline**: Tự retry, quarantine, replay khi có lỗi
-- **Real-time Data**: Dữ liệu cập nhật mỗi 5 phút từ OpenAQ v3
-- **6 Parameters**: PM2.5, PM10, O3, NO2, CO, SO2
-- **Verified**: Test thành công với location 4946813 (Hà Nội)
+Hệ thống giám sát chất lượng không khí tại Hà Nội (Trạm quan trắc Giải Phóng - ID `4946813`) sử dụng dữ liệu từ OpenAQ v3 với khả năng **tự phát hiện, cách ly và tự phục hồi (Self-Healing)** khi xảy ra sự cố API sập, timeout mạng, hoặc cảm biến gửi dữ liệu dị thường.
 
-## Tech Stack
+### Điểm nổi bật
+- **Self-Healing Pipeline**: Tự động Retry với hàm mũ (10s -> 20s -> 40s), cách ly (Quarantine) vào MongoDB khi cạn retry, và Replay phục hồi an toàn.
+- **Deduplication Tuyệt đối**: Cơ chế **Marker-First Dedup (SHA-256)** bảo đảm tính Idempotent — không bao giờ trùng lặp bản ghi kể cả khi replay hay crash giữa chừng.
+- **MongoDB Time Series**: Lưu trữ tối ưu với Time Series Collection (`timestamp`, `metadata.location_id`), tích hợp TTL tự dọn dẹp.
+- **Datadog Full Observability**: Dashboard 12 widgets theo dõi throughput, độ trễ, logs sự cố có cấu trúc, và 3 Monitors cảnh báo tự động.
+- **164/164 Tests Passed**: Bao phủ toàn bộ Unit test, Integration test và E2E scenario.
 
-- Python 3.11+
-- MongoDB (Time Series Collections)
-- Datadog (Dashboard, Monitors, Logs)
-- OpenAQ v3 API
-- Docker
+---
 
-## Setup
+## 2. Tech Stack
 
-### 1. Clone repo
+- **Ngôn ngữ & Runtime**: Python 3.10+ / 3.11
+- **Cơ sở dữ liệu**: MongoDB Atlas (Time Series Collections)
+- **Hệ thống giám sát (Observability)**: Datadog (Dashboard, Monitors, Structured Logs, Metrics)
+- **Nguồn dữ liệu**: OpenAQ API v3
+- **Đóng gói & Triển khai**: Docker, Docker Compose, Cloud (Render / Railway / Fly.io)
+
+---
+
+## 3. Cài đặt & Chạy Local
+
+### 3.1. Clone và cài đặt môi trường
 ```bash
 git clone https://github.com/YOUR_USERNAME/airquality-guardian.git
 cd airquality-guardian
-```
 
-### 2. Tạo virtual environment
-```bash
-python3 -m venv venv
-source venv/bin/activate  # Mac/Linux
-# venv\Scripts\activate     # Windows
-```
+# Tạo venv
+python -m venv venv
+# Kích hoạt venv:
+# Trên Windows:
+.\venv\Scripts\activate
+# Trên Linux/Mac:
+source venv/bin/activate
 
-### 3. Install dependencies
-```bash
+# Cài đặt thư viện
 pip install -r requirements.txt
 ```
 
-### 4. Setup environment
+### 3.2. Cấu hình biến môi trường
+Tạo file `.env` từ `.env.example`:
 ```bash
 cp .env.example .env
-# Sửa .env với API key thật
 ```
+Điền các giá trị:
+- `MONGODB_URI`: Chuỗi kết nối MongoDB Atlas
+- `OPENAQ_API_KEY`: API Key từ OpenAQ
+- `DATADOG_API_KEY`, `DATADOG_APP_KEY`, `DATADOG_SITE`: Thông tin tài khoản Datadog
 
-### 5. Chạy
+### 3.3. Các lệnh thực thi chính
+
 ```bash
-# Run once: fetch OpenAQ, save records to MongoDB Atlas, and send metrics/logs
-# to Datadog when DATADOG_API_KEY is configured.
+# 1. Chạy 1 chu kỳ bình thường (Fetch -> Validate -> Lưu MongoDB -> Gửi Datadog)
 python -m src.main
 
-# Docker
-docker-compose up
+# 2. Chạy liên tục theo chu kỳ (mỗi 5 phút) - Lệnh dùng để Deploy Cloud
+python -m src.main --loop
+
+# 3. Phục hồi và nạp lại dữ liệu từ vùng cách ly (Replay Quarantine)
+python -m src.main --replay --replay-limit 100
+
+# 4. Xuất báo cáo nhanh chất lượng không khí hiện tại và lịch sử (Read-only CLI)
+python -m src.main --report
+
+# 5. Khởi tạo Dashboard & Monitors lên tài khoản Datadog
+python scripts/apply_dashboard.py
+python scripts/apply_datadog.py
+
+# 6. Chạy Simulator giả lập 11 kịch bản sự cố để Demo
+python scripts/simulate.py
 ```
 
-One live run writes the fetched measurements to the configured MongoDB
-`air_quality` collection. Use it once to verify the integration; don't run it
-repeatedly just to view the same data.
-
-#### Where to see the live result
-
-- **Terminal:** the run summary shows fetched/valid/inserted/failed counts. Each
-  inserted document is printed with its timestamp, measurement, and AQI.
-- **MongoDB Atlas:** open **Database → Browse Collections → airquality →
-  air_quality**. Filter by `{"metadata.location_id": 4946813}`, then sort by
-  `timestamp` descending. `MONGODB_URI` should include the database name, or set
-  `MONGODB_DATABASE` in `.env`.
-- **Datadog metrics:** open **Metrics → Explorer** and query
-  `pipeline.records.inserted` (or `pipeline.records.valid`); filter by
-  `service:airquality-pipeline` and `env:dev`.
-- **Datadog logs:** open **Logs → Explorer** and search
-  `service:airquality-pipeline "AirQuality pipeline run completed"`.
-
-Metrics can take a short time to appear in Datadog after ingestion. The
-application-key setting is not needed for sending pipeline metrics/logs; it is
-used for monitor management.
-
-### Chạy toàn bộ test theo thứ tự
-
+### 3.4. Chạy kiểm thử (Test Suite)
 ```bash
 python -m pytest -q
+# Kết quả: 164 passed
 ```
 
-Pytest chạy test tuần tự theo mặc định; mỗi unit test vẫn độc lập và không dựa
-vào trạng thái do test trước tạo ra. Các flow nhiều thành phần nằm trong
-`tests/integration/`. Không dùng `-n` nếu muốn giữ chạy tuần tự.
+---
 
-## MongoDB
+## 4. Triển khai Cloud (Deployment)
 
-Set `MONGODB_URI` and `MONGODB_DATABASE` in `.env`. The client loads these
-settings when initialized, and creates indexes on `timestamp` and
-`metadata.location_id` for the `air_quality` collection.
+Chi tiết quy trình triển khai chạy 24/7 lên nền tảng Cloud (Render / Railway / Fly.io) có trong [docs/DEPLOY.md](docs/DEPLOY.md):
+- **Start Command**: `python -m src.main --loop`
+- **Tự động khởi tạo index**: Pipeline tự động kiểm tra và khởi tạo toàn bộ index (Time Series, Dedup Unique, TTL, Quarantine) khi khởi động.
 
-```python
-from src.database.mongodb import MongoDBClient
+---
 
-database = MongoDBClient()
-try:
-    documents = database.query_air_quality(
-        {"metadata.location_id": 4946813},
-        limit=100,
-    )
-finally:
-    database.close()
-```
+## 5. Tài liệu Chi tiết
 
-The client uses the `air_quality`, `quarantine_events`, and `pipeline_status`
-collections. `aggregate_aqi()` summarizes each location's highest pollutant
-AQI per record; its optional filter accepts a MongoDB query such as a timestamp
-range.
+- [Kiến trúc Tự phục hồi (Self-Healing Architecture)](docs/SELF_HEALING.md)
+- [Mô hình Dữ liệu MongoDB (Data Models & Schemas)](docs/DATA_MODEL.md)
+- [Cấu hình Giám sát Datadog (Dashboard & Monitors)](docs/DATADOG.md)
+- [Hướng dẫn Triển khai Cloud (Deployment Runbook)](docs/DEPLOY.md)
+- [Kịch bản Trình diễn Giám khảo (Demo Runbook)](docs/DEMO.md)
+- [Bảng Nhiệm vụ & Tiến độ (Task Tracker)](docs/task)
 
-## Datadog
+---
 
-Set `DATADOG_API_KEY`, `DATADOG_APP_KEY`, and optionally `DATADOG_SITE` in
-`.env`. Metrics and logs use the API key; creating monitors requires both keys.
-The dashboard and monitor request templates are in `config/datadog/`. They can
-be imported or submitted to the Datadog API after reviewing their queries and
-thresholds. Tests mock the API and never send data to a Datadog account.
+## 6. Phân công Nhóm
 
-`Pipeline.run_once()` runs fetch → validate → MongoDB persistence. It expects a
-configured `DataFetcher`, `DataValidator`, and `MongoDBClient`.
+- **Người 1 (Data Pipeline & Runtime)**: OpenAQ Fetcher, Data Validator (EPA ranges), Pipeline Engine, Scheduler (`--loop`), CLI Replay, Dedup SHA-256 Gate, CI/CD E2E tests.
+- **Người 2 (Data Platform & Observability & Ops)**: MongoDB Time Series Collections, Datadog Dashboard & Monitors templates, Quarantine Concurrency Management, CLI Report, Deployment & Docs.
 
-## Cấu trúc project
+---
 
-airquality-guardian/
-├── src/
-│ ├── fetcher/ # Data fetching (Người 1)
-│ ├── validation/ # Data validation (Người 1)
-│ ├── self_healing/ # Self-healing engine (Người 2)
-│ ├── models/ # Data models (Người 1)
-│ ├── database/ # MongoDB operations (Người 2)
-│ ├── datadog/ # Datadog integration (Người 2)
-│ ├── api/ # API endpoints (Future)
-│ └── main.py # Entry point (Người 1)
-├── tests/
-│ ├── unit/ # Unit tests
-│ └── test.py # Debug script
-├── docs/
-│ └── ARCHITECTURE.md
-├── Dockerfile
-└── docker-compose.yml
-
-
-## Data Source
-
-- **OpenAQ v3 API**: https://openaq.org/
-- **Location**: 4946813 - Số 1 đường Giải Phóng, Hà Nội
-- **Update frequency**: Mỗi 5 phút
-- **Parameters**: pm25, pm10, o3, no2, co, so2
-
-## Team
-
-- **Người 1** (Data Pipeline): Fetcher, Validator, Models
-- **Người 2** (Self-Healing + Ops): Self-Healing Engine, MongoDB, Datadog
-
-## License
-
+## 7. License
 MIT License

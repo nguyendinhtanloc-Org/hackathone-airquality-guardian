@@ -1,8 +1,15 @@
 # AirQuality Guardian — local stack (no cloud VM; only Atlas + Datadog
 # stay external, per the hackathon's free-tier grants).
 #
-#   docker compose up airflow      # demo mode: Airflow + mock OpenAQ
-#   docker compose up pipeline     # one-shot real cycle (unchanged from before)
+#   docker compose up airflow        # demo mode: Airflow + mock OpenAQ
+#   docker compose --profile oneshot up pipeline   # one-shot real cycle
+#
+# NOTE: the one-shot `pipeline` service is behind the "oneshot" profile.
+# Its CMD runs a SINGLE cycle then exits; with restart:unless-stopped a
+# bare `docker compose up` would restart it every few seconds, hammering
+# OpenAQ + Atlas. So `docker compose up -d` starts only the demo stack
+# (mock + postgres + airflow). To run one real cycle explicitly:
+#   docker compose --profile oneshot up pipeline
 #
 # Airflow UI:  http://localhost:8080  (admin / admin, created by airflow-init)
 # Mock OpenAQ: http://localhost:8000  (fault switch below)
@@ -12,7 +19,10 @@
 #   curl -X POST localhost:8000/control -d '{"fault": "ok"}'
 
 services:
-  # ---- existing one-shot pipeline (unchanged behaviour) -------------
+  # ---- one-shot pipeline, gated behind a profile -------------------
+  # `docker compose up` (no profile) will NOT start this; opt in with
+  # `docker compose --profile oneshot up pipeline`. Gating it prevents
+  # the exit-then-restart loop from running on every bare `up`.
   pipeline:
     build: .
     container_name: airquality-pipeline
@@ -23,6 +33,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
+    profiles:
+      - oneshot
 
   # Development service (hot-reload src/)
   pipeline-dev:

@@ -123,6 +123,7 @@ class Pipeline:
                 aqi_value = self.aqi_calculator.calculate(
                     measurement.parameter,
                     measurement.value,
+                    measurement.unit,
                 )
                 aqi_data: dict[str, Any] = {}
                 if aqi_value is not None:

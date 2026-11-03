@@ -21,13 +21,22 @@ class DataValidator:
     # 100 µg/m³ ceiling was rejecting every normal reading - caught on
     # live data (co=984 µg/m³ dropped each cycle). 5000 µg/m³ (~4.3 ppm)
     # is still far above safe indoor levels, so only real faults pass.
+    # Raised 5000 -> 15000 µg/m³ (~13 ppm): the old ceiling sat exactly
+    # at EPA's AQI-50 line for CO (4.4 ppm), so the CO AQI could never
+    # leave the "Good" band and a genuinely polluted reading (EPA
+    # AQI-100 = 9.4 ppm) was dropped as a sensor fault. 15000 µg/m³ is
+    # 1.5x the WHO 8-hour guideline (10 mg/m³) - still catches real
+    # instrument errors, but keeps the hazardous range.
+    # SO2: raised 1000 -> 3000 µg/m³ (~1145 ppb) so the EPA table's
+    # top band (1004 ppb) is reachable instead of being cut off at
+    # AQI ~226.
     MAX_PLAUSIBLE = {
         "pm25": 1000.0,
         "pm10": 1500.0,
         "o3": 1000.0,
         "no2": 1000.0,
-        "co": 5000.0,
-        "so2": 1000.0,
+        "co": 15000.0,
+        "so2": 3000.0,
     }
 
     def validate(self, api_response: dict) -> list[Measurement]:

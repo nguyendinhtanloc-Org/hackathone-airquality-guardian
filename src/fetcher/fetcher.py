@@ -15,11 +15,19 @@ class AirQualityFetchError(Exception):
 
 class DataFetcher:
     """Fetches air quality data from OpenAQ API v3"""
-    
-    def __init__(self, client_factory=None):
-        self.base_url = "https://api.openaq.org/v3"
+
+    DEFAULT_BASE_URL = "https://api.openaq.org/v3"
+
+    def __init__(self, client_factory=None, base_url=None, timeout=10):
+        # OPENAQ_API_URL lets the pipeline point at a mock OpenAQ (demo /
+        # CI) without touching code; default stays the real v3 API.
+        self.base_url = (
+            base_url
+            or os.getenv("OPENAQ_API_URL")
+            or self.DEFAULT_BASE_URL
+        ).rstrip("/")
         self.api_key = os.getenv("OPENAQ_API_KEY")
-        self.timeout = 10
+        self.timeout = timeout
         # Cache để không fetch lại sensor info
         self._sensor_cache: dict = {}
         # Injectable client factory so tests can supply a MockTransport.

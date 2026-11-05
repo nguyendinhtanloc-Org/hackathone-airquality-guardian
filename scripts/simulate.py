@@ -160,7 +160,7 @@ class MemoryDatabase:
         return self.docs[:limit]
 
     def count_pending_quarantine(self) -> int:
-        return sum(1 for r in self.quarantine._memory_store.values() if r.get("status") == "pending")
+        return self.quarantine.pending_count()
 
     def update_pipeline_status(self, status: str, metrics=None, incidents=None) -> None:
         self.status = {"status": status, "metrics": metrics, "incidents": incidents}
@@ -225,7 +225,11 @@ def build_context(use_mongo: bool, use_datadog: bool, backoff: float) -> Context
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
     )
     pipeline = Pipeline(
-        DataFetcher(client_factory=api.client_factory),
+        # Pinned to a mock URL: the fetcher's error strings embed
+        # base_url, and we don't want logs saying "api.openaq.org"
+        # when every request actually went to the in-process mock.
+        DataFetcher(client_factory=api.client_factory,
+                    base_url="http://mock-openaq.test/v3"),
         DataValidator(),
         database,
         self_healing_engine=engine,

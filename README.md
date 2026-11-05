@@ -16,7 +16,7 @@ Hệ thống giám sát chất lượng không khí tại Hà Nội (Trạm quan
 - **Deduplication Tuyệt đối**: Cơ chế **Marker-First Dedup (SHA-256)** bảo đảm tính Idempotent — không bao giờ trùng lặp bản ghi kể cả khi replay hay crash giữa chừng.
 - **MongoDB Time Series**: Lưu trữ tối ưu với Time Series Collection (`timestamp`, `metadata.location_id`), tích hợp TTL tự dọn dẹp.
 - **Datadog Full Observability**: Dashboard 12 widgets theo dõi throughput, độ trễ, logs sự cố có cấu trúc, và 3 Monitors cảnh báo tự động.
-- **164/164 Tests Passed**: Bao phủ toàn bộ Unit test, Integration test và E2E scenario.
+- **236/236 Tests Passed**: Bao phủ toàn bộ Unit test, Integration test, E2E và self-healing scenario.
 
 ---
 
@@ -85,7 +85,7 @@ python scripts/simulate.py
 ### 3.4. Chạy kiểm thử (Test Suite)
 ```bash
 python -m pytest -q
-# Kết quả: 164 passed
+# Kết quả: 236 passed
 ```
 
 ---

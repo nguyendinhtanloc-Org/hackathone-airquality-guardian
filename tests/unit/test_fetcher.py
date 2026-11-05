@@ -10,7 +10,33 @@ from src.fetcher.fetcher import AirQualityFetchError, DataFetcher
 
 @pytest.fixture
 def fetcher():
-    return DataFetcher()
+    # Pin the base URL: a .env loaded by another test (via src.main's
+    # load_dotenv) could otherwise leak OPENAQ_API_URL into this process
+    # and change the URL the test asserts on.
+    return DataFetcher(base_url=DataFetcher.DEFAULT_BASE_URL)
+
+
+def test_base_url_defaults_to_real_api(monkeypatch):
+    monkeypatch.delenv("OPENAQ_API_URL", raising=False)
+    assert DataFetcher().base_url == "https://api.openaq.org/v3"
+
+
+def test_base_url_honors_openaq_api_url_env(monkeypatch):
+    monkeypatch.setenv("OPENAQ_API_URL", "http://mock-openaq:8000/v3")
+    assert DataFetcher().base_url == "http://mock-openaq:8000/v3"
+
+
+def test_explicit_base_url_wins_over_env(monkeypatch):
+    monkeypatch.setenv("OPENAQ_API_URL", "http://mock-openaq:8000/v3")
+    assert (
+        DataFetcher(base_url="http://other:9999/v3").base_url
+        == "http://other:9999/v3"
+    )
+
+
+def test_trailing_slash_is_stripped(monkeypatch):
+    monkeypatch.setenv("OPENAQ_API_URL", "http://mock-openaq:8000/v3/")
+    assert DataFetcher().base_url == "http://mock-openaq:8000/v3"
 
 
 @pytest.mark.asyncio

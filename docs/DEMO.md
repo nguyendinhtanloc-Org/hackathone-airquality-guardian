@@ -7,7 +7,7 @@ cd E:\PJ\hackathone-airquality-guardian
 .\venv\Scripts\activate
 $env:PYTHONIOENCODING = "utf-8"
 $env:DD_ENV = "demo"          # tách dữ liệu demo khỏi env:dev thật
-python -m pytest -q           # phải thấy: 164 passed
+python -m pytest -q           # phải thấy: 236 passed
 python scripts\apply_dashboard.py
 ```
 
@@ -39,7 +39,7 @@ Mở sẵn 3 cửa sổ:
 | 7. Dữ liệu rác | "Sensor trả giá trị âm, NaN, vượt ngưỡng — bị loại, phần sạch vẫn lưu." | Chọn **5** → `valid=2 failed=4` |
 | 8. Cảnh báo ô nhiễm | "Khi ô nhiễm đột biến, AQI lên mức nguy hại." | Chọn **9** → AQI ~300 |
 | 9. Dashboard (1.5 phút) | "Mọi sự cố đều quan sát được." | Chuyển sang Datadog: nhóm **Self-healing** (retry, incident), **Logs** (incident stream), ô AQI chuyển đỏ. Đổi `$scenario` = `server_outage` để lọc |
-| 10. Kết (30s) | "164 unit test, chạy được bằng Docker, dữ liệu dedup, không mất bản ghi." | Có thể chạy **11 (Chaos)** trong lúc trả lời câu hỏi |
+| 10. Kết (30s) | "236 unit test, chạy được bằng Docker, dữ liệu dedup, không mất bản ghi." | Có thể chạy **11 (Chaos)** trong lúc trả lời câu hỏi |
 
 > [!TIP]
 > Metrics Datadog trễ 1–2 phút. Hãy chạy các bước 4–8 **trước**, nói tiếp phần giải thích, rồi mới chuyển sang dashboard ở bước 9.

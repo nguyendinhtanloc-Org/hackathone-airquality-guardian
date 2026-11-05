@@ -233,6 +233,21 @@ class QuarantineManager:
             del self._memory_store[record_id]
         return len(expired)
 
+    def pending_count(self) -> int:
+        """Số bản ghi đang chờ replay (status=pending).
+
+        Cùng ngữ nghĩa với ``MongoDBClient.count_pending_quarantine()``:
+        chỉ tính ``pending`` (không tính ``in_flight`` vì đó là bản ghi
+        đang được worker khác giữ). Dùng chung một hàm công khai để
+        simulator và test không phải đụng vào ``_memory_store``.
+        """
+        if self.collection is not None:
+            return self.collection.count_documents({"status": "pending"})
+        return sum(
+            1 for record in self._memory_store.values()
+            if record.get("status") == "pending"
+        )
+
     def _stale_before(self) -> datetime:
         """In-flight claims older than this are considered abandoned."""
         return _utcnow() - timedelta(seconds=self.claim_lease_seconds)

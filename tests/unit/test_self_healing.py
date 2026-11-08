@@ -1,10 +1,10 @@
 import pytest
-from self_healing.engine import (
+from src.self_healing.engine import (
     Incident,
     QuarantinedData,
     SelfHealingEngine,
 )
-from self_healing.quarantine import QuarantineManager
+from src.self_healing.quarantine import QuarantineManager
 def test_should_retry_transient_error():
     engine = SelfHealingEngine(max_retries=3)
     incident = Incident(

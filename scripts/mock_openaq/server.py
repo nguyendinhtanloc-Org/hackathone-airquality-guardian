@@ -218,8 +218,9 @@ def make_server(port: int = 0, host: str = "127.0.0.1") -> ThreadingHTTPServer:
 
 def main() -> None:
     port = int(os.getenv("MOCK_OPENAQ_PORT", "8000"))
-    server = make_server(port)
-    print(f"Mock OpenAQ listening on http://127.0.0.1:{port}/v3")
+    host = os.getenv("MOCK_OPENAQ_HOST", "0.0.0.0")
+    server = make_server(port, host)
+    print(f"Mock OpenAQ listening on http://{host}:{port}/v3")
     print('Fault switch: curl -X POST 127.0.0.1:{}/control -d \'{{"fault": "500"}}\''.format(port))
     try:
         server.serve_forever()

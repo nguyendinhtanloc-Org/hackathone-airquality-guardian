@@ -19,7 +19,7 @@
 
 ---
 
-### 🎬 BƯỚC 1: Chạy chu kỳ bình thường với dữ liệu thật (Happy Path)
+### BƯỚC 1: Chạy chu kỳ bình thường với dữ liệu thật (Happy Path)
 
 #### 1. Lệnh thực hiện trên Terminal:
 ```bash
@@ -44,7 +44,7 @@ Datadog accepted pipeline log.
 
 ---
 
-### 🎬 BƯỚC 2: Giả lập sự cố API sập 500 & Self-Healing (Retry & Quarantine)
+### BƯỚC 2: Giả lập sự cố API sập 500 & Self-Healing (Retry & Quarantine)
 
 #### 1. Lệnh thực hiện trên Terminal:
 ```bash
@@ -71,7 +71,7 @@ docker compose run --rm pipeline python scripts/simulate.py --scenario 3
 
 ---
 
-### 🎬 BƯỚC 3: Hồi phục API & Tự động Replay dữ liệu
+### BƯỚC 3: Hồi phục API & Tự động Replay dữ liệu
 
 #### 1. Lệnh thực hiện trên Terminal:
 ```bash
@@ -96,7 +96,7 @@ docker compose run --rm pipeline python scripts/simulate.py --scenario 10
 
 ---
 
-### 🎬 BƯỚC 4: Xuất báo cáo AQI tổng hợp (CLI Report)
+### BƯỚC 4: Xuất báo cáo AQI tổng hợp (CLI Report)
 
 #### 1. Lệnh thực hiện trên Terminal:
 ```bash
@@ -125,7 +125,7 @@ Stored window (avg/min/max over retention period)
 
 ---
 
-### 🎬 BƯỚC 5: Chạy bộ kiểm thử tự động (Test Suite)
+### BƯỚC 5: Chạy bộ kiểm thử tự động (Test Suite)
 
 #### 1. Lệnh thực hiện trên Terminal:
 ```bash

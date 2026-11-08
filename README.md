@@ -3,7 +3,7 @@
 > **Self-Healing Data Pipeline cho Real-Time Air Quality Monitoring**  
 > Dự án tham gia Hackathon — Tích hợp **MongoDB Atlas (Time Series)** & **Datadog Observability**.
 
-[![CI Pipeline](https://github.com/YOUR_USERNAME/airquality-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR_USERNAME/airquality-guardian/actions)
+[![CI Pipeline](https://github.com/nguyendinhtanloc-Org/hackathone-airquality-guardian/actions/workflows/ci.yml/badge.svg)](https://github.com/nguyendinhtanloc-Org/hackathone-airquality-guardian/actions)
 
 ---
 
@@ -34,8 +34,8 @@ Hệ thống giám sát chất lượng không khí tại Hà Nội (Trạm quan
 
 ### 3.1. Clone và cài đặt môi trường
 ```bash
-git clone https://github.com/YOUR_USERNAME/airquality-guardian.git
-cd airquality-guardian
+git clone https://github.com/nguyendinhtanloc-Org/hackathone-airquality-guardian.git
+cd hackathone-airquality-guardian
 
 # Tạo venv
 python -m venv venv
@@ -105,7 +105,7 @@ Chi tiết quy trình triển khai chạy 24/7 lên nền tảng Cloud (Render /
 - [Cấu hình Giám sát Datadog (Dashboard & Monitors)](docs/DATADOG.md)
 - [Hướng dẫn Triển khai Cloud (Deployment Runbook)](docs/DEPLOY.md)
 - [Kịch bản Trình diễn Giám khảo (Demo Runbook)](docs/DEMO.md)
-- [Bảng Nhiệm vụ & Tiến độ (Task Tracker)](docs/task)
+- [Bảng Nhiệm vụ & Tiến độ (Timeline & Tasks)](docs/timeline.md)
 
 ---
 

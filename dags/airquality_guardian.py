@@ -22,13 +22,14 @@ Design rules (deliberate, do not "improve" them without re-reading):
 """
 
 import os
+from datetime import datetime
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 
 # In-container python: the Airflow image's venv already has the
 # pipeline requirements (see Dockerfile.airflow).
-PY = "/opt/airflow/venv/bin/python"
+PY = "/opt/airflow/venv/bin/python" if os.path.exists("/opt/airflow/venv/bin/python") else "python"
 WORKDIR = "/opt/airflow"
 LOCATION_ID = os.getenv("PIPELINE_LOCATION_ID", "4946813")
 
@@ -41,6 +42,7 @@ dag = DAG(
     # new run as soon as the previous one ends, so the effective cadence
     # is max(5 min, cycle duration).
     schedule=os.getenv("AIRFLOW_SCHEDULE", "*/5 * * * *"),
+    start_date=datetime(2024, 1, 1),
     catchup=False,
     tags=["airquality", "hackathon"],
     default_args={

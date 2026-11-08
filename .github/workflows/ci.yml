@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop, data-pipeline]
+  pull_request:
+    branches: [main, develop, data-pipeline]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run unit + integration tests
+      run: |
+        pytest tests/unit tests/integration -v
+
+    # E2E runs the real Pipeline + MongoDBClient against an in-memory
+    # Mongo fake (unique dedup_key index enforced) and a mocked OpenAQ
+    # transport: no Atlas or Docker needed, so it stays fast and portable.
+    - name: Run end-to-end tests
+      run: |
+        pytest tests/e2e -v

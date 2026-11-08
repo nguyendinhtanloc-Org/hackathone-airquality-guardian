@@ -1,23 +1,113 @@
-□ Đọc tài liệu MongoDB Time Series:
-   - https://www.mongodb.com/docs/manual/core/timeseries/
-   - Ví dụ về Time Series collections
+TIMELINE — TÌNH TRẠNG CÔNG VIỆC & TASK BÀN GIAO (Cập nhật 03/11/2026)
 
-□ Đọc tài liệu Datadog:
-   - Dashboard docs
-   - Monitors docs
-   - Log management docs
+Mục tiêu nộp bài: 23:59 ngày 07/11/2026 (deadline đã dời +1 tuần so với 01/11)
+Yêu cầu công nghệ bắt buộc: MongoDB (Time Series) + Datadog (Dashboard, Monitors, Logs) + Self-Healing Pipeline
+Quyết định hạ tầng: KHÔNG deploy cloud VM. Chạy local bằng docker-compose
+(Airflow + mock OpenAQ + postgres metadata); chỉ Atlas + Datadog là 2 dịch
+vụ cloud ngoài (free tier cuộc thi).
+Trạng thái Test Suite: 236 tests passed (Unit, Integration, E2E, Self-healing)
 
-□ Setup MongoDB Atlas (free tier):
-   - Tạo account
-   - Tạo cluster (M0 Sandbox)
-   - Tạo database: airquality
-   - Tạo collections:
-     * air_quality (Time Series)
-     * quarantine_events
-     * pipeline_status
+================================================================================
+I. TỔNG HỢP TIẾN ĐỘ DỰ ÁN (NGƯỜI 1 & NGƯỜI 2)
+================================================================================
 
-□ Test kết nối từ local
+[H] = Đã hoàn thành (Code + Unit/Integration/E2E tests xanh 100%)
+[L] = Code xong, đã xác nhận hoặc cần chạy bước apply trên hạ tầng live thật
+[!] = Việc cần làm ngay trước giờ nộp bài (Demo, Xoay password, Apply Datadog)
 
-□ Commit
+1. NGƯỜI 1: DATA PIPELINE & RUNTIME [HOÀN THÀNH 100%]
+   - 2.1  Self-Healing Engine tích hợp Pipeline run_once: bắt lỗi, phân loại, incident tracking [H]
+   - 2.2  Retry loop + Exponential backoff (10s -> 20s -> 40s), không spam API [H]
+   - 2.3  Scheduler run_loop() (--loop), graceful shutdown qua SIGTERM/SIGINT [H]
+   - 2.4  Vòng đời pipeline_status (_id: "current") ghi nhận running/degraded/stopped [H]
+   - 2.5  Telemetry & Incident logging lên Datadog (status=error, tags, metrics) [H]
+   - 2.6  CLI --replay phục hồi bản ghi cách ly từ MongoDB [H]
+   - 2.1c Chống trùng lặp dữ liệu (Dedup SHA-256 marker-first) an toàn tuyệt đối [H]
+   - 2.1d Trần số lần replay (MAX_REPLAY_ATTEMPTS=5) chống loop vô hạn [H]
+   - 2.7  CI/CD GitHub Actions + Bộ E2E tests 4 kịch bản phục hồi lỗi [H]
 
-───────────────────────────────────────────────────
+2. NGƯỜI 2: DATA PLATFORM, OBSERVABILITY & OPS [HOÀN THÀNH CODE - CHỜ APPLY & DEPLOY]
+   - 2.10 MongoDB Time Series Collection [H]:
+          Đã cấu hình air_quality (timeField: timestamp, metaField: metadata.location_id).
+          Đã giải quyết lỗi Atlas code 72 (partialFilterExpression cho TTL index).
+   - 2.11 Datadog Setup Scripts [L]:
+          scripts/apply_datadog.py (tạo 3 monitors) và scripts/apply_dashboard.py (dashboard 12 widgets).
+          -> Cần chạy trên môi trường có mạng với Datadog API/App Key.
+   - 2.12 Runtime Monitor Ensure-Once [H]:
+          Tự động đảm bảo degraded monitor tồn tại khi có sự cố, auto-resolve khi hết lỗi.
+   - 2.13 CLI Report [H]:
+          Lệnh `python -m src.main --report` đọc dữ liệu mới nhất + tổng hợp thống kê theo EPA AQI.
+   - 2.8 / C1 Quarantine Lifecycle [H]:
+          Đã thống nhất QuarantineManager (A) là nguồn ghi và quản lý duy nhất (CAS claim pending -> in_flight -> replayed/failed).
+   - 2.14 Documentation [H]:
+          Đã bổ sung bộ tài liệu hoàn chỉnh (docs/DATADOG.md, docs/DATA_MODEL.md, docs/SELF_HEALING.md, README.md).
+   - PIVOT AIRFLOW + DOCKER-COMPOSE [H] (bổ sung 31/10, commits 4465c99..9c2bac0):
+          Quyết định nhóm: KHÔNG deploy cloud VM; chỉ Atlas + Datadog giữ
+          ngoài, phần còn lại chạy local 1 máy bằng docker-compose.
+          - B1 fetcher đọc OPENAQ_API_URL (env) -> trỏ pipeline sang mock
+            mà không sửa code. (Kèm sửa .env/.env.example đang trỏ URL v2
+            hết hạn -> đã sửa v3.)
+          - B2 scripts/mock_openaq/server.py (stdlib, 0 dep): 6 cảm biến
+            giống trạm thật (4 fresh + no2/co "stuck" -> tự dedup-skip),
+            công tắc POST /control fault=ok|500|401|timeout. 5 integration
+            test HTTP THẬT.
+          - B3 docker-compose.yml (+postgres, airflow-init, airflow
+            standalone, mock_openaq; giữ 2 service pipeline cũ, one-shot
+            giờ nằm sau profile "oneshot" để `up` trần không restart-loop).
+            DAG dags/airquality_guardian.py (5 phút, run_cycle >> replay).
+            Quy tắc thiết kế (đỪNG "sửa"): KHÔNG retries ở Airflow (engine
+            tự backoff 3 lần trong chu kỳ); chu kỳ degraded = task GREEN
+            (data đã được cứu vào quarantine, cảnh báo nằm ở monitor
+            Datadog); replay chạy mỗi chu kỳ vì idempotent.
+          - B4 scripts/demo_selfhealing.py: story 5 bước hermetic (HTTP
+            thật + DB fake, KHÔNG cần Atlas/Docker), 19 checks, exit 0.
+            Runbook: docs/SELF_HEALING_DEMO.md (3 cửa sổ: Airflow UI +
+            terminal + Datadog).
+
+================================================================================
+II. NHỮNG ĐIỂM CẦN CHỈNH SỬA / THỰC HIỆN NGAY CHO DEADLINE 07/11
+================================================================================
+
+1. [!] ÁP DỤNG DATADOG THẬT (Mất ~3 phút):
+   Chạy 2 lệnh sau để tạo Dashboard và 3 Monitors trên Datadog:
+     python scripts/apply_dashboard.py
+     python scripts/apply_datadog.py
+
+2. [!] CHẠY STACK LOCAL + DEMO (Mục tiêu bắt buộc của nhóm - Mất ~20 phút):
+   - KHÔNG deploy cloud VM (đã chốt 31/10). Toàn bộ chạy local:
+       docker compose up -d mock_openaq postgres airflow
+     -> Airflow UI http://localhost:8080 (admin/admin), mock OpenAQ :8000.
+   - Lần đầu build image apache/airflow mất 5-10 phút (~1GB).
+   - Kịch bản demo 3 cửa sổ (Airflow UI + terminal + Datadog): xem
+     docs/SELF_HEALING_DEMO.md. Công tắc sự cố:
+       curl -X POST localhost:8000/control -d '{"fault": "500"}'   # hỏng
+       curl -X POST localhost:8000/control -d '{"fault": "ok"}'    # hồi phục
+   - Lưới an toàn (không cần Docker/Atlas, dùng khi hạ tầng trục trặc):
+       python scripts/demo_selfhealing.py     # 19 checks, exit 0
+   - (Tùy chọn, không chặn) deploy cloud để chạy 24/7: docs/DEPLOY.md.
+
+3. [H] BẢO MẬT & XOAY MẬT KHẨU ATLAS — ĐÃ XONG 30/10:
+   - Mật khẩu DB đã được xoay; verify_live.py chạy 5/5 OK với mật khẩu mới.
+   - Mật khẩu cũ trong git history đã chết. KHÔNG xoay lại lần nữa trừ khi
+     có lý do (nếu xoay thì cập nhật .env + kiểm tra lại verify_live.py).
+
+4. [!] QUAY VIDEO DEMO THEO KỊCH BẢN (docs/DEMO.md - Mất ~30 phút):
+   - Mở màn hình Datadog Dashboard + Terminal.
+   - Dùng script có sẵn: `python scripts/simulate.py` để trình diễn 11 kịch bản lỗi mà không cần hack code.
+     (Lưu ý: simulator gắn tag scenario:<tên> + source:simulator; dùng
+     biến $scenario trên Datadog để tách traffic mô phỏng khỏi data thật.)
+   - Video ~7-10 phút giới thiệu: Bài toán -> Dữ liệu thật -> Self-healing (retry, quarantine, replay) -> Dashboard Datadog.
+
+================================================================================
+III. KNOWN LIMITATIONS ĐƯỢC TÀI LIỆU HÓA (ĐỂ GIẢI TRÌNH VỚI GIÁM KHẢO)
+================================================================================
+1. Dữ liệu trạm Hà Nội 4946813 từ OpenAQ hiện bị đơ 2 cảm biến NO2 và CO (trả dữ liệu cũ). Hệ thống phát hiện và dedup tự động (skipped_dedup=2).
+2. TTL index trên Time Series: Atlas yêu cầu partialFilterExpression trên metaField (đã xử lý qua biến AIR_QUALITY_TTL_META).
+3. AQI CO/SO2 theo bảng EPA (CO: ppm 8h, SO2: ppb 1h) quy đổi từ µg/m³ mà
+   pipeline ingest. Hành lang hữu dụng của trạm Hà Nội nằm ở AQI thấp cho CO
+   (~0.86 ppm -> AQI 10); CO tăng cao là tình huống hiếm ở trạm này, nên widget
+   AQI CO thường hiển thị mức thấp — đúng theo dữ liệu, không phải lỗi.
+4. Một chu kỳ = 5 phút (Airflow */5 hoặc FETCH_INTERVAL_SECONDS=300). Với
+   CO/SO2 (trung bình 8h/1h theo EPA), giá trị đọc được là trung bình đã quy
+   về trạm chứ không phải trung bình theo cửa sổ EPA; ta dùng giá trị tức
+   thời của cảm biến như nguồn duy nhất.

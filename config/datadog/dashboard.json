@@ -1,77 +1,311 @@
 {
   "title": "AirQuality Guardian - Pipeline Health",
-  "description": "Pipeline, self-healing, AQI, and log overview.",
+  "description": "Self-healing air quality pipeline (OpenAQ -> validate -> MongoDB). Use the $scenario variable to isolate simulator runs (scripts/simulate.py).",
   "layout_type": "ordered",
+  "reflow_type": "auto",
+  "template_variables": [
+    { "name": "env", "prefix": "env", "available_values": [], "default": "*" },
+    { "name": "location_id", "prefix": "location_id", "available_values": [], "default": "*" },
+    { "name": "scenario", "prefix": "scenario", "available_values": [], "default": "*" }
+  ],
   "widgets": [
     {
       "definition": {
-        "type": "timeseries",
-        "title": "Pipeline health",
-        "requests": [
+        "type": "group",
+        "title": "Overview",
+        "layout_type": "ordered",
+        "background_color": "vivid_blue",
+        "widgets": [
           {
-            "q": "sum:pipeline.records.fetched{*}",
-            "display_type": "line"
+            "definition": {
+              "type": "note",
+              "content": "## AirQuality Guardian\n**Self-healing pipeline** cho Hà Nội (OpenAQ v3).\n\n- Retry: Timeout / 5xx / network\n- Quarantine: lỗi vĩnh viễn (4xx, DB)\n- Replay: `python -m src.main --replay`\n- Simulator: `python scripts/simulate.py`",
+              "background_color": "blue",
+              "font_size": "14",
+              "text_align": "left",
+              "show_tick": false,
+              "has_padding": true
+            }
           },
           {
-            "q": "sum:pipeline.records.valid{*}",
-            "display_type": "line"
-          },
-          {
-            "q": "sum:pipeline.records.failed{*}",
-            "display_type": "line"
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "timeseries",
-        "title": "Self-healing metrics",
-        "requests": [
-          {
-            "q": "sum:selfhealing.retry.total{*}",
-            "display_type": "line"
-          },
-          {
-            "q": "sum:selfhealing.quarantine.count{*}",
-            "display_type": "line"
-          },
-          {
-            "q": "sum:selfhealing.replay.count{*}",
-            "display_type": "line"
-          }
-        ]
-      }
-    },
-    {
-      "definition": {
-        "type": "query_value",
-        "title": "Current AQI",
-        "requests": [
-          {
-            "q": "max:datavalue.aqi.current{*}"
-          }
-        ],
-        "autoscale": true
-      }
-    },
-    {
-      "definition": {
-        "type": "list_stream",
-        "title": "Pipeline logs",
-        "requests": [
-          {
-            "response_format": "event_list",
-            "query": {
-              "data_source": "logs",
-              "query": "service:airquality-pipeline",
-              "indexes": [
-                "*"
+            "definition": {
+              "type": "query_value",
+              "title": "Current AQI",
+              "requests": [
+                {
+                  "q": "max:datavalue.aqi.current{$env,$location_id,$scenario}",
+                  "aggregator": "last",
+                  "conditional_formats": [
+                    { "comparator": "<=", "value": 50, "palette": "white_on_green" },
+                    { "comparator": "<=", "value": 100, "palette": "black_on_light_yellow" },
+                    { "comparator": "<=", "value": 150, "palette": "white_on_yellow" },
+                    { "comparator": "<=", "value": 200, "palette": "white_on_red" },
+                    { "comparator": ">", "value": 200, "palette": "white_on_red" }
+                  ]
+                }
               ],
-              "compute": {
-                "aggregation": "count"
-              },
-              "group_by": []
+              "autoscale": true,
+              "precision": 0
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Pipeline status (1 = degraded)",
+              "requests": [
+                {
+                  "q": "max:pipeline.status.degraded{$env,$location_id,$scenario}",
+                  "aggregator": "last",
+                  "conditional_formats": [
+                    { "comparator": ">=", "value": 1, "palette": "white_on_red" },
+                    { "comparator": "<", "value": 1, "palette": "white_on_green" }
+                  ]
+                }
+              ],
+              "precision": 0
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Records inserted (window)",
+              "requests": [
+                { "q": "sum:pipeline.records.inserted{$env,$location_id,$scenario}.as_count()", "aggregator": "sum" }
+              ],
+              "precision": 0
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Success rate %",
+              "requests": [
+                {
+                  "q": "100 * sum:pipeline.records.valid{$env,$location_id,$scenario} / sum:pipeline.records.fetched{$env,$location_id,$scenario}",
+                  "aggregator": "avg",
+                  "conditional_formats": [
+                    { "comparator": ">=", "value": 90, "palette": "white_on_green" },
+                    { "comparator": ">=", "value": 60, "palette": "white_on_yellow" },
+                    { "comparator": "<", "value": 60, "palette": "white_on_red" }
+                  ]
+                }
+              ],
+              "precision": 1,
+              "custom_unit": "%"
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Pending quarantine",
+              "requests": [
+                {
+                  "q": "max:selfhealing.quarantine.count{$env,$location_id,$scenario}",
+                  "aggregator": "last",
+                  "conditional_formats": [
+                    { "comparator": ">", "value": 10, "palette": "white_on_red" },
+                    { "comparator": ">", "value": 0, "palette": "white_on_yellow" },
+                    { "comparator": "<=", "value": 0, "palette": "white_on_green" }
+                  ]
+                }
+              ],
+              "precision": 0
+            }
+          },
+          {
+            "definition": {
+              "type": "manage_status",
+              "title": "Monitors",
+              "summary_type": "monitors",
+              "display_format": "countsAndList",
+              "color_preference": "text",
+              "hide_zero_counts": true,
+              "query": "AirQuality Guardian",
+              "sort": "status,asc"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Pipeline throughput",
+        "layout_type": "ordered",
+        "background_color": "vivid_green",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Records per cycle",
+              "show_legend": true,
+              "legend_layout": "horizontal",
+              "requests": [
+                { "q": "sum:pipeline.records.fetched{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "cool" } },
+                { "q": "sum:pipeline.records.valid{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "green" } },
+                { "q": "sum:pipeline.records.inserted{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "dog_classic" } },
+                { "q": "sum:pipeline.records.skipped_dedup{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "grey" } },
+                { "q": "sum:pipeline.records.failed{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "warm" } }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Cycle latency (s)",
+              "requests": [
+                { "q": "avg:pipeline.fetch.latency{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "purple" } },
+                { "q": "max:pipeline.fetch.latency{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "orange", "line_type": "dashed" } }
+              ],
+              "markers": [
+                { "value": "y = 10", "display_type": "warning dashed", "label": "slow" }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Cycles by scenario",
+              "requests": [
+                { "q": "top(sum:pipeline.cycle.count{$env,$location_id} by {scenario}.as_count(), 10, 'sum', 'desc')" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Self-healing",
+        "layout_type": "ordered",
+        "background_color": "vivid_orange",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Retries & attempts",
+              "requests": [
+                { "q": "sum:selfhealing.retry.total{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "orange" } },
+                { "q": "max:pipeline.attempts{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "dog_classic" } }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Incidents: retryable vs permanent",
+              "requests": [
+                { "q": "sum:pipeline.incidents.retryable{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "warm" } },
+                { "q": "sum:pipeline.incidents.permanent{$env,$location_id,$scenario}", "display_type": "bars", "style": { "palette": "red" } }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Quarantine backlog",
+              "requests": [
+                { "q": "max:selfhealing.quarantine.count{$env,$location_id,$scenario}", "display_type": "area", "style": { "palette": "purple" } }
+              ],
+              "markers": [
+                { "value": "y = 10", "display_type": "error dashed", "label": "overflow" }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Degraded cycles",
+              "requests": [
+                { "q": "sum:pipeline.status.degraded{$env,$location_id} by {scenario}", "display_type": "bars" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Air quality",
+        "layout_type": "ordered",
+        "background_color": "vivid_purple",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "AQI trend",
+              "requests": [
+                { "q": "max:datavalue.aqi.current{$env,$location_id,$scenario}", "display_type": "line", "style": { "palette": "warm", "line_width": "thick" } }
+              ],
+              "markers": [
+                { "value": "y = 50", "display_type": "ok dashed", "label": "Good" },
+                { "value": "y = 100", "display_type": "warning dashed", "label": "Moderate" },
+                { "value": "y = 150", "display_type": "error dashed", "label": "Unhealthy (SG)" }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_table",
+              "title": "AQI by pollutant (latest)",
+              "requests": [
+                { "q": "max:datavalue.aqi.pm25{$env,$location_id,$scenario}", "aggregator": "last", "alias": "PM2.5" },
+                { "q": "max:datavalue.aqi.pm10{$env,$location_id,$scenario}", "aggregator": "last", "alias": "PM10" },
+                { "q": "max:datavalue.aqi.o3{$env,$location_id,$scenario}", "aggregator": "last", "alias": "O3" },
+                { "q": "max:datavalue.aqi.no2{$env,$location_id,$scenario}", "aggregator": "last", "alias": "NO2" },
+                { "q": "max:datavalue.aqi.co{$env,$location_id,$scenario}", "aggregator": "last", "alias": "CO" },
+                { "q": "max:datavalue.aqi.so2{$env,$location_id,$scenario}", "aggregator": "last", "alias": "SO2" }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Raw concentrations",
+              "show_legend": true,
+              "requests": [
+                { "q": "avg:datavalue.measurement.pm25{$env,$location_id,$scenario}", "display_type": "line" },
+                { "q": "avg:datavalue.measurement.pm10{$env,$location_id,$scenario}", "display_type": "line" },
+                { "q": "avg:datavalue.measurement.no2{$env,$location_id,$scenario}", "display_type": "line" },
+                { "q": "avg:datavalue.measurement.o3{$env,$location_id,$scenario}", "display_type": "line" },
+                { "q": "avg:datavalue.measurement.so2{$env,$location_id,$scenario}", "display_type": "line" }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Logs",
+        "layout_type": "ordered",
+        "background_color": "gray",
+        "widgets": [
+          {
+            "definition": {
+              "type": "log_stream",
+              "title": "Incidents",
+              "query": "service:airquality-pipeline status:error",
+              "columns": ["component", "error_type", "retryable", "attempt"],
+              "show_date_column": true,
+              "show_message_column": true,
+              "message_display": "expanded-md",
+              "sort": { "column": "time", "order": "desc" }
+            }
+          },
+          {
+            "definition": {
+              "type": "log_stream",
+              "title": "Pipeline runs",
+              "query": "service:airquality-pipeline \"AirQuality pipeline run completed\"",
+              "columns": ["status", "records_fetched", "records_inserted", "records_failed", "attempts"],
+              "show_date_column": true,
+              "show_message_column": true,
+              "message_display": "inline",
+              "sort": { "column": "time", "order": "desc" }
             }
           }
         ]

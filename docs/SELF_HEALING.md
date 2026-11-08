@@ -16,18 +16,18 @@ Các pipeline dữ liệu IoT/Môi trường thường đối mặt với 3 bài
 [OpenAQ API] ──Fetch──> [Validation] ──Persist──> [MongoDB Atlas]
       │                       │                         │
   (Lỗi mạng/5xx)          (Dữ liệu rác)             (Dedup Gate)
-      ▼                       ▼                         ▼
+      v                       v                         v
  [Tier 1: Retry]         [Bỏ qua rác,             [SHA-256 Check:
   Exponential Backoff     chỉ nạp phần sạch]       Chặn trùng lặp]
   (10s -> 20s -> 40s)         │
-      │                       ▼
+      │                       v
   (Thất bại cạn retry)   [Quarantine]
-      ▼
+      v
  [Tier 2: Quarantine]
   Lưu vào MongoDB `quarantine_events`
   Đánh dấu pipeline: `degraded`
       │
-      ▼
+      v
  [Tier 3: Replay Engine]
   CLI / Tự động chu kỳ sau
   CAS concurrency lock (pending -> in_flight -> replayed)
